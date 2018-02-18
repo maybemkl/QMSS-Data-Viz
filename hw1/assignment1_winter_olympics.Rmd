@@ -1,0 +1,501 @@
+---
+title: "Assignment 1: Using ggplot2 for visualization"
+author: Mikael Brunila
+date: 2017-02-07
+always_allow_html: yes
+output: 
+  html_document:
+    keep_md: true
+    toc: true
+    toc_float: true
+    toc_depth: 3
+---
+
+Winter Olympics Medals over Time
+================================
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE)
+library(ggplot2)
+library(tidyverse)
+library(readr)
+library(DT)
+library(ggthemes)
+library(rvest)
+library(stringr)
+library(RColorBrewer)
+library(plotly)
+
+```
+
+## Scenario
+
+Imagine you are the data scientist at a respected media outlet -- say the "New York Times". For the Winter Olympics coverage, your editor-in-chief asks you to analyze some data on the history of `Winter Olympics Medals by Year, Country, Event and Gender` and prepare some data visualizations in which you outline the main patterns around which to base the story.
+
+Since there is **no way that all features of the data can be represented** in such a memo, feel free to pick and choose some patterns that would make for a good story -- outlining important patterns and presenting them in a visually pleasing way. 
+
+The full background and text of the story will be researched by a writer of the magazine -- your input should be based on the data and some common sense (i.e. no need to read up on this). 
+
+Provide **polished plots** that are refined enough to include in the magazine with very little further manipulation (already include variable descriptions [if necessary for understanding], titles, source [e.g. "International Olympic Committee"], right color etc.) and are understandable to the average reader of the "New York Times". The design does not need to be NYTimes-like. Just be consistent.
+
+## Data
+
+The main data is provided as an excel sheet, containing the following variables on all medal winners in all winter olympics from 1924 to 2014:
+
+  - `Year`: year of the winter olympics  
+  - `City`: city the olympics is held  
+  - `Sport`: the type of sport   
+  - `Discipline`: a grouping of disciplines  
+  - `Event`:	the particular event / competition  
+  - `Athlete`: name of the athlete  
+  - `Country`: country origin of the athlete  
+  - `Gender`: gender of the athlete  
+  - `Medal`: type of medal won
+
+For example, an `event` is a competition in a sport or discipline that gives rise to a ranking. Thus, _skiing_ is a `sport`, while _cross-country skiing, Alpine skiing, snowboarding, ski jumping_ and _Nordic combined_ are `disciplines`. _Alpine skiing_ is a `discipline`, while the _super-G, giant slalom, slalom_ and _combined_ are `events`.
+
+In addition, you are provided with some additional information about the countries in a separate spreadsheet, including the `IOC Country	Code`, `Population`, and `GDP per capita`.
+
+```{r data, message=FALSE, warning=FALSE}
+
+winter <- read_csv('winter.csv', col_names = TRUE)
+dictionary <- read_csv('dictionary.csv', col_names = TRUE)
+
+colnames(dictionary)[1] <- "Country_full"
+
+```
+
+## Tasks
+
+#### 1. Medal Counts over Time
+
+Combine the information in the two spreadsheets `winter.csv` and `dictionary.csv`. Note, that the `dictionary.csv` is the set of current countries. You have to decide what to do with some [countries that competed under different designations in the past (e.g. Germany and Russia)](https://en.wikipedia.org/wiki/All-time_Olympic_Games_medal_table) and some defunct countries and whether and how to combine their totals.
+
+```{r combine}
+
+combined <- merge(winter, dictionary, by.x = "Country", by.y = "Code")
+
+```
+
+Calculate a summary of how many winter games each country competed in, and how many medals of each type the country won. Use that summary to provide a **visual comparison of medal count by country**. 
+
+```{r games_competed}
+
+summary_games_wide <- combined %>%
+  group_by(Country_full, Medal) %>%
+  tally() %>%
+  spread(Medal, n) %>%
+  replace(is.na(.), 0) %>% 
+  as.data.frame() %>%
+  mutate(Total = rowSums(.[2:4])) %>%
+  arrange(desc(Total)) %>%
+  select(Country = Country_full, Total, Gold, Silver, Bronze)
+
+```
+
+Feel free to focus on smaller set of countries (say top 10), highlight the United States or another country of your choice, consider gender of the medal winners etc. to make the visualization interesting. Please provide one visualization showing an over time comparison and one in which a total medal count (across all Winter Olympics) is used. Briefly discuss which visualization you recommend to your editor and why.
+
+**Below are three visualizations of the success of countries in the Winter Olympics. The first one is a simple barplot, with the total amount of medals divided into medal types by colour in each bar. I added counts on the bars, to make the graph more legible. The second visualization shows the medals won by the five most successful countries over time. While doing this graph, I noticed something odd: all countries started winning a lot more towards the end of the 20th century. To clarify the issue, I made a graph with all the medals over time and, indeed, the amount of medals awarded has been rising steeply since the 1980s. With this in mind, the total amount of medals won is a slightly inaccurate measure of success. I instead calculated the share that of all medals that a country has won during a given year and plotted this in a similar fashion to the facetted plot on country success over time. This last graph in combination with the graph on the total amount of medals awarded over time would make an interesting article by itself and I would recommend it to the visual editor of any magazine covering the Winter Olympics in 2018.**
+
+```{r medal_count}
+
+summary_games_long <- summary_games_wide %>%
+  gather(key = Medal, 
+         value = Number, Total, Gold, Silver, Bronze) %>%
+  arrange(desc(Medal), desc(Number))
+
+top_countries <- summary_games_long[1:10,1]
+summary_games_long <- summary_games_long %>% 
+  filter(Medal != "Total")
+
+ggplot(subset(summary_games_long, Country %in% top_countries), 
+       aes(x = reorder(Country,-Number), fill = Medal)) + 
+  geom_bar(stat="identity", aes(y = Number)) + 
+  labs(title = "The rugged ten", 
+       subtitle = "Top ten medal winning countries in the Winter Olympics from 1924 to 2014", 
+       x = "County", y = "Total amount") +
+  scale_fill_manual(values = c("brown", "orange", "gray")) +
+  geom_text(aes(x = Country, y = Number, label = Number), 
+            position = position_stack(vjust = 0.5), family =  "serif") +
+  theme_tufte()
+
+```
+
+```{r time_comparison}
+
+top_five_countries <- summary_games_long[1:5,1]
+
+medals_per_year <- combined %>%
+  group_by(Country_full, Year) %>%
+  arrange(Country_full, Year) %>%
+  tally() %>%
+  as.data.frame() %>%
+  select(Country = Country_full, Year, Medals = n)
+
+ggplot(subset(medals_per_year, Country %in% top_five_countries), aes(x = Year, y = Medals, color = Country)) +
+  geom_line() +
+  facet_grid(Country ~. , scales = "free", space = "free") +
+  labs(y = "Medals per year", x = "Olympic year") +
+  scale_x_continuous(breaks = medals_per_year$Year) +
+  theme_few() +
+  theme(axis.text.x = element_text(size = 7, angle = 90), 
+        strip.text.y = element_text(size = 8, angle = 90)) +
+  scale_y_continuous(limits = c(0,100))
+
+```
+
+```{r total_medals_per_year}
+
+total_medals_per_year <- combined %>%
+  group_by(Year, Medal) %>%
+  group_by(Year) %>%
+  tally() %>%
+  as.data.frame()
+
+ggplot(total_medals_per_year, aes(x = Year, y = n)) +
+  geom_line() +
+  labs(y = "Medals per year", x = "Olympic year") +
+  theme_few()
+  
+
+```
+
+```{r share_of_medal_per_year}
+
+share_of_medals_per_year <- setNames(data.frame(matrix(ncol = 3, nrow = 0)), c("Country", "Year", "Share"))
+
+for(row in 1:nrow(medals_per_year)) {
+  share_of_medals_per_year[row, 1] <- medals_per_year[row, 1]
+  share_of_medals_per_year[row, 2] <- medals_per_year[row, 2]
+  share_of_medals_per_year[row, 3] <- medals_per_year[row, 3] / total_medals_per_year[total_medals_per_year$Year == medals_per_year[row, 2],2]
+}
+  
+ggplot(subset(share_of_medals_per_year, Country %in% top_five_countries), aes(x = Year, y = Share*100, color = Country)) +
+  geom_line() +
+  facet_grid(Country ~. , scales = "free", space = "free") +
+  labs(y = "Medals per year (%)", x = "Olympic year") +
+  scale_x_continuous(breaks = share_of_medals_per_year$Year) +
+  theme_few() +
+  theme(axis.text.x = element_text(size = 7, angle = 90), 
+        strip.text.y = element_text(size = 8, angle = 90))
+
+```
+
+#### 2. Medal Counts adjusted by Population, GDP
+
+There are different ways to calculate "success". Consider the following variants and choose one (and make sure your choice is clear in the visualization):  
+  - Just consider gold medals.  
+  - Simply add up the number of medals of different types.    
+  - Create an index in which medals are valued differently. (gold=3, silver=2, bronze=1).   
+  - A reasonable other way that you prefer.
+  
+Now, adjust the ranking of medal success by (a) GDP per capita and (b) population. You have now three rankings: unadjusted ranking, adjusted by GDP per capita, and adjusted by population.
+
+```{r rankings}
+
+weighted_success <- setNames(data.frame(matrix(ncol = 2, nrow = 0)), c("Country", "Score"))
+
+for(row in 1:nrow(summary_games_long)) {
+  weighted_success[row, 1] <- summary_games_long[row, 1]
+  
+  if(summary_games_long[row, 2] == "Gold"){
+    weighted_success[row, 2] <- summary_games_long[row, 3]*3
+  }
+  if(summary_games_long[row, 2] == "Silver"){
+    weighted_success[row, 2] <- summary_games_long[row, 3]*2
+  }
+  if(summary_games_long[row, 2] == "Bronze"){
+    weighted_success[row, 2] <- summary_games_long[row, 3]*1
+  }
+}
+
+weighted_success <- weighted_success %>%
+  group_by(Country) %>%
+  tally(Score) %>%
+  as.data.frame() %>%
+  select(Country, Score = n)
+
+```
+
+```{r adjustements}
+
+countries_pop_gdp <- combined %>%
+  group_by(Country_full, Population, `GDP per Capita`) %>%
+  select(Country = Country_full, Population, GDP_pC = `GDP per Capita`) %>%
+  unique()
+
+success_by_pop_gdp <- setNames(data.frame(matrix(ncol = 3, nrow = 37)), 
+                               c("Country", "Score_pop","Score_GDP"))
+
+success_by_pop_gdp$Country <- countries_pop_gdp$Country
+success_by_pop_gdp$Score_pop <- (weighted_success$Score / countries_pop_gdp$Population)*10000
+success_by_pop_gdp$Score_GDP <- (weighted_success$Score / countries_pop_gdp$GDP_pC)*1000
+
+success_by_pop <- success_by_pop_gdp %>%
+  arrange(desc(Score_pop))
+
+success_by_GDP <- success_by_pop_gdp %>%
+  arrange(desc(Score_pop))
+
+```
+
+```{r adjustements_plots}
+
+ggplot(success_by_pop[1:10,], 
+       aes(x = reorder(Country,-Score_pop))) + 
+  geom_bar(stat="identity", aes(y = Score_pop), fill = "#A5F2F3") + 
+  theme_few() +
+  labs(title = "Estonia and Luxembourg – supreme rulers of the Winter Olympics?", 
+       subtitle = 
+         "Top ten medal winning countries weighted by population in the Winter Olympics from 1924 to 2014", 
+       x = "County", y = "Score weighted by population") +
+  theme(axis.text.x = element_text(size = 10, angle = 90))
+
+ggplot(success_by_GDP[1:10,], 
+       aes(x = reorder(Country,-Score_GDP))) + 
+  geom_bar(stat="identity", aes(y = Score_GDP), fill = "#4DC5D6") + 
+  theme_few() +
+  labs(title = "A very different top 10 for the Winter Olympics", 
+       subtitle = 
+         "Top ten medal winning countries weighted by GDP in the Winter Olympics from 1924 to 2014", 
+       x = "County", y = "Score weighted by GDP") +
+  theme(axis.text.x = element_text(size = 10, angle = 90))
+
+
+```
+
+Visualize how these rankings differ. Feel free to highlight a specific pattern (e.g. "Slovenia -- the hidden star of the Winter Olympics" or "The superpowers losing their grip").
+
+#### 3. Host Country Advantage
+
+Until the 2014 Winter Olympics (our data ends here), there were 19 host cities. Calculate whether the host nation had an advantage. That is calculate whether the host country did win more medals when the Winter Olympics was in their country compared to other times. 
+
+Note, that the 19 host cities are noted in the data but not that the countries they are located in. This happens commonly and often Wikipedia has the [kind of additional data you want for the task](https://en.wikipedia.org/wiki/Winter_Olympic_Games). To save you some time, here is a quick way to get this kind of table from Wikipedia into R:
+
+```{r hosts,echo=TRUE, eval=FALSE}
+
+wiki_hosts <- read_html("https://en.wikipedia.org/wiki/Winter_Olympic_Games")
+hosts <- html_table(html_nodes(wiki_hosts, "table")[[5]], fill=TRUE)
+hosts <- hosts[-1,1:3]
+hosts$city <- str_split_fixed(hosts$Host, n=2, ",")[,1]
+hosts$country <- str_split_fixed(hosts$Host, n=2, ",")[,2]
+
+# Added code to remove the games that were cancelled due to WW II
+hosts <- hosts[-c(5, 6), ]
+#There was an extra space in the coutry names
+hosts$country <- substring(hosts$country, 2)
+hosts <- filter(hosts, Year < 2018)
+
+```
+
+Provide a visualization of the host country advantage (or abscence thereof). 
+
+**The issue of advantage is difficult to visualize, due to the large amounts of data you would have to crosstabulate (hosting and winning). I chose to focus on a few countries and found ambigious evidence. The below graph clearly shows that the US has excelled during most games that have been hosted here. Russia had tremendous success during the 2014 games in Sochi, but this has been connected to an epic doping scandal. France seems to have had somewhat greater success during hosted games and Canada seems to provide inconclusive evidence, peaking during one hosted game and doing worse during another. Again, the graph on relative medals won might be more useful: In this case it corroborates the evidence for the US and shows that France has done actually much better when hosting games, while keeping the evidence inconclusive for Canada. All in all, the picture gets a bit clearer.**
+
+```{r host_country_advantage, eval=FALSE}
+
+ggplot(subset(medals_per_year, Country %in% c("France", "United States", "Canada", "Russia")), aes(x = Year, y = Medals, color = Country)) +
+  geom_line() +
+  geom_vline(xintercept = as.integer(hosts[hosts$country == c("France"), 2]), lty=2, color = "yellow3") +
+  geom_vline(xintercept = as.integer(hosts[hosts$country == c("United States"), 2]), lty=2, color = "violet") +
+  geom_vline(xintercept = as.integer(hosts[hosts$country == c("Canada"), 2]), lty=2, color = "red") +
+  geom_vline(xintercept = as.integer(hosts[hosts$country == c("Russia"), 2]), lty=2, color = "turquoise4") +
+  facet_grid(Country ~. , scales = "free", space = "free") +
+  theme(axis.text.x = element_text(size = 7, angle = 90), 
+        strip.text.y = element_text(size = 8, angle = 90)) +
+  scale_y_continuous(limits = c(0,100)) +
+  labs(y = "Medals per year", x = "Olympic year", title = "Hosting for the wins?", subtitle = "The relationship between hosting the Winter Olympics and winning medals.") +
+  theme_few()
+
+```
+
+```{r host_country_advantage_share, eval=FALSE}
+
+ggplot(subset(share_of_medals_per_year, Country %in% c("France", "United States", "Canada", "Russia")), aes(x = Year, y = Share*100, color = Country)) +
+  geom_line() +
+  geom_vline(xintercept = as.integer(hosts[hosts$country == c("France"), 2]), lty=2, color = "yellow3") +
+  geom_vline(xintercept = as.integer(hosts[hosts$country == c("United States"), 2]), lty=2, color = "violet") +
+  geom_vline(xintercept = as.integer(hosts[hosts$country == c("Canada"), 2]), lty=2, color = "red") +
+  geom_vline(xintercept = as.integer(hosts[hosts$country == c("Russia"), 2]), lty=2, color = "turquoise4") +
+  facet_grid(Country ~. , scales = "free", space = "free") +
+  theme(axis.text.x = element_text(size = 7, angle = 90), 
+        strip.text.y = element_text(size = 8, angle = 90)) +
+  labs(y = "Share of medals per year (%)", x = "Olympic year", title = "Hosting for the wins?", subtitle = "The relationship between hosting the Winter Olympics and winning medals.") +
+  theme_few()
+
+```
+
+#### 4. Country success by sport / discipline / event
+
+As a last country level comparison, let's consider comparing countries' success by looking at particular sports, disciplines, and/or events. Make a choice of which kind of comparison reveals some interesting comparison here. Feel free to focus on a subset of data (say one specific sport), only look at a single country etc. 
+
+```{r country_success_by_sport}
+
+finland_data <- combined %>%
+  filter(Country_full == "Finland") %>%
+  group_by(Discipline, Year) %>%
+  tally() %>%
+  as.data.frame() %>%
+  select(Discipline, Year, Medals = n)
+  
+
+ggplot(finland_data, aes(x = Year, y = Medals)) +
+  geom_bar(stat = "identity", aes(fill = Discipline, colour = I("black"))) +
+  #facet_grid(Discipline ~. , scales = "free", space = "free") +
+  theme(axis.text.x = element_text(size = 7, angle = 90), 
+        strip.text.y = element_text(size = 8, angle = 90)) +
+#  geom_text(aes(x = Year, y = Medals, label = Medals), 
+#        position = position_stack(vjust = 0.5), family =  "serif") +
+  labs(title = "Ice hockey gives the goods", 
+       subtitle = "Finnish medals in the winter olympics from 1924 to 2014.\nThe amount has gone up steeply with Ice hockey wins since the 1990s.", 
+       x = "Athlete", y = "Total amount") +
+  labs(y = "Medals per year", x = "Olympic year") +
+  scale_fill_brewer(palette = "Paired") +
+  theme_few()
+
+```
+
+#### 5. Most successful athletes
+
+Now, let's look at the most successful athletes. Provide a visual display of the most successful athletes of all time. Consider using other information on gender, sport, discipline, event, year, and country to make the display more informative.
+
+```{r most_successful_athletes}
+
+most_successful_athletes_wide <- combined %>%
+  group_by(Athlete, Medal) %>%
+  tally() %>%
+  spread(Medal, n) %>%
+  as.data.frame() %>%
+  mutate(Total = rowSums(.[2:4])) %>%
+  arrange(desc(Total))
+
+most_successful_athletes_long <- most_successful_athletes_wide %>%
+  gather(key = Medal, 
+         value = Number, Total, Gold, Silver, Bronze) %>%
+  arrange(desc(Medal), desc(Number))
+
+top_athletes <- most_successful_athletes_long[1:10,1]
+
+most_successful_athletes_long$Athlete <- gsub(", ", "\n", most_successful_athletes_long$Athlete)
+top_athletes_formatted <- most_successful_athletes_long[1:10,1]
+
+most_successful_athletes_long <- most_successful_athletes_long %>% 
+  filter(Medal != "Total")
+
+ggplot(subset(most_successful_athletes_long, Athlete %in% top_athletes_formatted), 
+       aes(x = reorder(Athlete,-Number), fill = Medal)) + 
+  geom_bar(stat="identity", aes(y = Number)) + 
+  labs(title = "The Norwegian hegemony", 
+       subtitle = "Top ten medal winning athletes in the Winter Olympics from 1924 to 2014", 
+       x = "Athlete", y = "Total amount") +
+  scale_fill_manual(values = c("brown", "orange", "gray")) +
+  geom_text(aes(x = Athlete, y = Number, label = Number), 
+            position = position_stack(vjust = 0.5), family =  "serif") +
+  theme_few() +
+  theme(axis.text.x = element_text(size = 5))
+
+```
+
+```{r most_successful_athletes_over_time}
+
+athlete_medals_per_year <- combined %>%
+  group_by(Athlete, Year) %>%
+  arrange(Athlete, Year) %>%
+  tally() %>%
+  as.data.frame() %>%
+  select(Athlete, Year, Medals = n)
+
+ggplot(subset(athlete_medals_per_year, Athlete %in% top_athletes), aes(x = Year, y = Medals, color = Athlete)) +
+  geom_line() +
+  labs(title = "The millennial triumph?", 
+       subtitle = "Most top medal winning athletes have competed in the new millenium, \nbut this might also indicate how the amount of sports and medals has \ngone up dramatically since 1980.", 
+       x = "Year", y = "Total amount") +
+  scale_x_continuous(breaks = pretty(athlete_medals_per_year$Year, n = 25)) +
+  theme_few()
+
+```
+
+### Interactivity
+
+#### 6. Make two plots interactive
+
+Choose 2 of the plots you created above and add interactivity. Briefly describe to the editor why interactivity in these visualization is particularly helpful for a reader.
+
+**I wanted to implement two charts with a lot of information as interactive. The first one shows how many medals the top 10 medal winning athletes have won from year to year. There are a lot of lines in the graph and having some interactivity would definitely help the user focus on the most essential parts. The second one is the graph with the Finnish medals for all the Winter Olympics. The bars in this chart pile up a lot of information, which makes it useful for grasping the big picture but a bit confusing when trying to focus on any detail. Adding interactivity should make it easier for the user to review victories in any given year. I wanted to add a highchart as well, but honestly the documentation was so messy and poor that the package seems unusable without really diving into it.**
+
+```{r, message=FALSE, warning=FALSE}
+
+p1 <- ggplot(subset(athlete_medals_per_year, Athlete %in% top_athletes), aes(x = Year, y = Medals, color = Athlete)) +
+  geom_line() +
+  labs(title = "The millennial triumph?", 
+       subtitle = "Most top medal winning athletes have competed in the new millenium, \nbut this might also indicate how the amount of sports and medals has \ngone up dramatically since 1980.", 
+       x = "Year", y = "Total amount") +
+  scale_x_continuous(breaks = pretty(athlete_medals_per_year$Year, n = 25)) +
+  theme_few()
+
+
+ggplotly(p1)
+
+```
+
+
+```{r, message=FALSE, warning=FALSE}
+
+p2 <- ggplot(finland_data, aes(x = Year, y = Medals)) +
+  geom_bar(stat = "identity", aes(fill = Discipline)) +
+  #facet_grid(Discipline ~. , scales = "free", space = "free") +
+  theme(axis.text.x = element_text(size = 7, angle = 90), 
+        strip.text.y = element_text(size = 8, angle = 90)) +
+#  geom_text(aes(x = Year, y = Medals, label = Medals), 
+#        position = position_stack(vjust = 0.5), family =  "serif") +
+  labs(title = "Ice hockey gives the goods", 
+       subtitle = "Finnish medals in the winter olympics from 1924 to 2014.\nThe amount has gone up steeply with Ice hockey wins since the 1990s.", 
+       x = "Athlete", y = "Total amount") +
+  labs(y = "Medals per year", x = "Olympic year") +
+  scale_fill_brewer(palette = "Paired") +
+  theme_few()
+
+ggplotly(p2)
+
+```
+
+#### 7. Data Table
+
+Prepare a selected dataset and add a datatable to the output. Make sure the columns are clearly labelled. Select the appropriate options for the data table (e.g. search bar, sorting, column filters etc.). Suggest to the editor which kind of information you would like to provide in a data table and why.
+
+**This table provides maybe the most essential and sought after information about medals in the Winter Olympics. The ability for a user to not just see who has won the most medals is complemented through interactivity, which allows the user to arrange winners by different medal types, filter for countries or medals and so on. It is very basic but very useful. Adding the colours to the medal types adds some legibility, although it is not very elegant. This trade-off happens in the context of very basic HTML and is hard to overcome without adding custom CSS and so on.**
+
+```{r datatable}
+
+datatable(summary_games_wide, 
+          colnames = c("Country", "Total", "Gold", "Silver", "Bronze"), 
+          options = list(language = list(sSearch = "Filter:"))) %>%
+#  formatStyle("Country", fontWeight = 'bold') %>%
+#  formatStyle("Total", fontWeight = 'bold') %>%
+  formatStyle("Gold",  color = 'white', 
+                backgroundColor = "#FFD700", fontWeight = 'bold') %>%
+  formatStyle("Silver",  color = "white", 
+                backgroundColor = "#C0C0C0", fontWeight = 'bold') %>%
+  formatStyle("Bronze",  color = "white", 
+                backgroundColor = "#B87333", fontWeight = 'bold')
+
+
+
+
+```
+
+## Technical Details
+
+The data comes in a reasonably clean Excel dataset. If needed for your visualization, you can add visual drapery like flag icons, icons for sports, icons for medals etc. but your are certainly not obligated to do that. 
+
+Part of the your task will be transforming the dataset into a shape that allows you to plot what you want in ggplot2. For some plots, you will necessarily need to be selective in what to include and what to leave out. 
+
+Make sure to use at least three different types of graphs, e.g. line graphs, scatter, histograms, bar chats, dot plots, heat maps etc.
+
+## Submission
+
+Please follow the [instructions](/Exercises/homework_submission_instructions.md) to submit your homework. The homework is due on Monday, February 19.
+
+## Please stay honest!
+
+Yes, the medal counts of the olympics have surely been analyzed before.  If you do come across something, please no wholesale copying of other ideas. We are trying to evaluate your abilities in using ggplot2 and data visualization not the ability to do internet searches. Also, this is an individually assigned exercise -- please keep your solution to yourself.
