@@ -1,0 +1,430 @@
+---
+title: "Assignment 2: Mapping Fire Incidents and FDNY Response Times"
+author: Thomas Brambor
+date: 2017-03-07
+always_allow_html: yes
+output: 
+  html_document:
+    keep_md: true
+---
+
+Fires in NYC and FDNY Response
+================================
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Overview
+
+For this assignment, we are going to investigate serious incidents requiring the fire department to respond. Using data about the locations of firehouses and fires occurring in New York City, we want to know whether response times to fires differ across the city. Second, we will try to focus on one possible variable that could affect response times -- the distance from the firehouse -- and see whether we find the (expected) effect.
+
+To keep this homework manageable, I am leaving out another part of the investigation: What is the effect of demographic and/or income characteristics of the neighborhood on response times. This is likely a bit more sensitive but also relevant from a public policy perspective.  
+
+## Data
+
+We rely on two data sets.
+
+#### Incidents responded to by fire companies
+
+NYC Open Data has data on all [incidents responded to by fire companies](https://data.cityofnewyork.us/Public-Safety/Incidents-Responded-to-by-Fire-Companies/tm6d-hbzd). I have included the variable description file in the exercise folder. The following variables are available:
+
+  - IM_INCIDENT_KEY:	Unique identifier for each incident which serves
+  - INCIDENT_TYPE_DESC	The code and description of the incident category type
+  - INCIDENT_DATE_TIME	The date and time that the incident was logged into the Computer Aided Dispatch system
+  - ARRIVAL_DATE_TIME	The date and time that the first unit arrived on scene
+  - UNITS_ONSCENE	Total number of units that arrived on scene
+  - LAST_UNIT_CLEARED_DATETIME	The date and time that the incident was completed and the last unit cleared the scene
+  - HIGHEST_LEVEL_DESC	The highest alarm level that the incident received
+  - TOTAL_INCIDENT_DURATION	The total number of seconds from when then incident was created to when the incident was closed
+  - ACTION_TAKEN1_DESC	The code and description of the first action taken
+  - ACTION_TAKEN2_DESC	The code and description of the second action taken
+  - ACTION_TAKEN3_DESC	The code and description of the third action taken
+  - PROPERTY_USE_DESC	The code and description of the type of street or building where the incident took place
+  - STREET_HIGHWAY	The name of the street where the incident_took place
+  - ZIP_CODE	The postal zip code where the incident took place
+  - BOROUGH_DESC	The borough where the incident took place
+  - FLOOR	The floor of the building where the incident took place
+  - CO_DETECTOR_PRESENT_DESC	Indicator for when a CO detector was present
+  - FIRE_ORIGIN_BELOW_GRADE_FLAG	Indicator for when the fire originated below grade
+  - STORY_FIRE_ORIGIN_COUNT	Story in which the fire originated
+  - FIRE_SPREAD_DESC	How far the fire spread from the object of origin
+  - DETECTOR_PRESENCE_DESC	Indicator for when a  detector was present
+  - AES_PRESENCE_DESC	Indicator for when an Automatic Extinguishing System is present
+  - STANDPIPE_SYS_PRESENT_FLAG	Indicator for when a standpipe was present in the area of origin of a fire
+
+This dataset is only update annually, and thus far only data from 2013 to 2015 is contained. The full dataset is also somewhat too large for an exercise (1.3M rows), so I suggest to limit yourself to a subset. I have added a file containing the subset of the most severe incidents (_Level 7 - all hands_) for 2015 only which yields 2,335 incidents.
+
+```{r, eval=FALSE}
+library(tidyverse)
+fire_all <- read_csv("no_upload/Incidents_Responded_to_by_Fire_Companies.csv") 
+fire_all$year <- substr(fire_all$INCIDENT_DATE_TIME, 7, 10)
+fire <- fire_all%>% 
+  filter(HIGHEST_LEVEL_DESC == "7 - Signal 7-5") %>%
+  filter(year==2015)
+```
+
+Unfortunately, the addresses of the incidents were not geocoded yet. Ideally, I would like you to know how to do this but am mindful about the hour or so required to get this done. So, here is the code. The geocodes (as far as they were returned successfully) are part of the data.
+
+```{r, eval=FALSE}
+library(ggmap)
+
+# Make list of addresses
+address <- str_c( str_to_title(fire$STREET_HIGHWAY),
+                  "New York, NY",
+                  fire$ZIP_CODE,
+                  sep=", ")
+
+# Register Google API Key
+register_google(key = Sys.getenv("GOOGLE_MAPS_API_KEY"))
+
+# Geocode Addresses
+latlong <- geocode(address, output = c("latlon"))
+
+# Merge on
+fire$Latitude  <- latlong$lat
+fire$Longitude <- latlong$lon
+
+# Save File
+write_csv(fire, "severe_incidents.csv")
+```
+
+#### FDNY Firehouse Listing
+
+NYC Open Data also provides data on the [location of all 218 firehouses in NYC](https://data.cityofnewyork.us/Public-Safety/FDNY-Firehouse-Listing/hc8x-tcnd). Relevant for our analysis are the following variables:
+
+    FacilityName, Borough, Latitude, Longitude
+
+## Tasks
+
+```{r libraries}
+
+library(geojsonR)
+library(geosphere)
+library(ggplot2)
+library(ggthemes)
+library(htmltools)
+library(htmlwidgets)
+library(leaflet)
+library(leaflet.extras)
+library(lubridate)
+library(rgdal)
+library(rgeos)
+library(sf)
+library(sp)
+library(stringr)
+library(tibble)
+library(tidyverse)
+
+```
+
+```{r load_data}
+
+severe <- read_csv("severe_incidents.csv")
+listings <- read.csv("FDNY_Firehouse_Listing.csv")
+listings <- listings %>%
+  select(FacilityName, Borough, Latitude, Longitude)
+
+severe <- severe %>%
+  filter(!is.na(Longitude))
+
+coordinates(severe) <- ~Longitude + Latitude
+boroughs <- readOGR("nyc_boro.geojson")
+
+proj4string(severe) <- proj4string(boroughs)
+
+severe <- severe[boroughs,]
+
+```
+
+#### 1. Location of Severe Fires
+
+Provide a `leaflet` map of the severe fires contained in the file `severe_incidents.csv`. Ignore locations that fall outside the five boroughs of New York City. Provide at least three pieces of information on the incident in a popup. 
+
+```{r severe_fires}
+
+map_severe_fires <- leaflet(severe) %>%
+  setView(lng = -74.0060, lat = 40.7128, zoom = 11) %>%
+  addProviderTiles(providers$CartoDB.PositronNoLabels) %>%
+  addCircles(color = "red",
+             label = ~htmlEscape(as.character(INCIDENT_TYPE_DESC)),
+             popup = paste("Incident key:",severe$IM_INCIDENT_KEY,"<br/>",
+                           "Borough:", severe$BOROUGH_DESC,"<br/>",
+                           "Incident date and time:",  severe$INCIDENT_DATE_TIME))
+
+map_severe_fires
+
+```
+
+
+#### 2. Layers and Clusters
+
+##### a) Color by Type of Property
+
+Start with the previous map. Now, distinguish the markers of the fire locations by `PROPERTY_USE_DESC`, i.e. what kind of property was affected. If there are too many categories, collapse some categories. Choose an appropriate coloring scheme to map the locations by type of affected property. Add a legend informing the user about the color scheme. Also make sure that the information about the type of affected property is now contained in the popup information. Show this map.
+
+*Collapsing some of the categories below:*
+
+```{r recoding}
+
+sort(unique(severe$PROPERTY_USE_DESC))
+
+severe$PROPERTY_USE_DESC <- ifelse(severe$PROPERTY_USE_DESC %in% grep("NNN|UUU|000", severe$PROPERTY_USE_DESC, value = TRUE), "Other, none or unknown", severe$PROPERTY_USE_DESC)
+
+severe$PROPERTY_USE_DESC <- ifelse(severe$PROPERTY_USE_DESC %in% grep("^12", severe$PROPERTY_USE_DESC, value = TRUE), "Bar, restaurant, concert hall, theater, playground", severe$PROPERTY_USE_DESC)
+
+severe$PROPERTY_USE_DESC <- ifelse(severe$PROPERTY_USE_DESC %in% grep("^13", severe$PROPERTY_USE_DESC, value = TRUE), "School, college, place of worship, public", severe$PROPERTY_USE_DESC)
+
+severe$PROPERTY_USE_DESC <- ifelse(severe$PROPERTY_USE_DESC %in% grep("^17", severe$PROPERTY_USE_DESC, value = TRUE), "Transit station", severe$PROPERTY_USE_DESC)
+
+severe$PROPERTY_USE_DESC <- ifelse(severe$PROPERTY_USE_DESC %in% grep("^15", severe$PROPERTY_USE_DESC, value = TRUE), "School, college, place of worship, public", severe$PROPERTY_USE_DESC)
+
+severe$PROPERTY_USE_DESC <- ifelse(severe$PROPERTY_USE_DESC %in% grep("^1", severe$PROPERTY_USE_DESC, value = TRUE), "Bar, restaurant, concert hall, theater, playground", severe$PROPERTY_USE_DESC)
+
+severe$PROPERTY_USE_DESC <- ifelse(severe$PROPERTY_USE_DESC %in% grep("^2", severe$PROPERTY_USE_DESC, value = TRUE), "School, college, place of worship, public", severe$PROPERTY_USE_DESC)
+
+severe$PROPERTY_USE_DESC <- ifelse(severe$PROPERTY_USE_DESC %in% grep("^3", severe$PROPERTY_USE_DESC, value = TRUE), "Health or law enforcement", severe$PROPERTY_USE_DESC)
+
+severe$PROPERTY_USE_DESC <- ifelse(severe$PROPERTY_USE_DESC %in% grep("^4", severe$PROPERTY_USE_DESC, value = TRUE), "Residential or hotel", severe$PROPERTY_USE_DESC)
+
+severe$PROPERTY_USE_DESC <- ifelse(severe$PROPERTY_USE_DESC %in% grep("^59", severe$PROPERTY_USE_DESC, value = TRUE), "Bank, post, office", severe$PROPERTY_USE_DESC)
+
+severe$PROPERTY_USE_DESC <- ifelse(severe$PROPERTY_USE_DESC %in% grep("^5", severe$PROPERTY_USE_DESC, value = TRUE), "Store, shop, service", severe$PROPERTY_USE_DESC)
+
+severe$PROPERTY_USE_DESC <- ifelse(severe$PROPERTY_USE_DESC %in% grep("^62|^63|^64", severe$PROPERTY_USE_DESC, value = TRUE), "Utility, laboratory, computer center", severe$PROPERTY_USE_DESC)
+
+severe$PROPERTY_USE_DESC <- ifelse(severe$PROPERTY_USE_DESC %in% grep("^7", severe$PROPERTY_USE_DESC, value = TRUE), "Manufacturing, storage facility", severe$PROPERTY_USE_DESC)
+
+severe$PROPERTY_USE_DESC <- ifelse(severe$PROPERTY_USE_DESC %in% grep("^8", severe$PROPERTY_USE_DESC, value = TRUE), "Manufacturing, storage facility", severe$PROPERTY_USE_DESC)
+
+severe$PROPERTY_USE_DESC <- ifelse(severe$PROPERTY_USE_DESC %in% grep("^9|669", severe$PROPERTY_USE_DESC, value = TRUE), "Outside area", severe$PROPERTY_USE_DESC)
+
+sort(unique(severe$PROPERTY_USE_DESC))
+count(severe@data, PROPERTY_USE_DESC)
+
+```
+
+```{r color_by_type_of_property}
+
+pal = colorFactor("Set3", domain = severe$PROPERTY_USE_DESC)
+color_prop_use = pal(severe$PROPERTY_USE_DESC)
+
+map_severe_fires_type <- leaflet(severe) %>%
+  setView(lng = -74.0060, lat = 40.7128, zoom = 11) %>%
+  addProviderTiles(providers$CartoDB.PositronNoLabels) %>%
+  addCircles(color = color_prop_use,
+             label = ~htmlEscape(as.character(PROPERTY_USE_DESC)),
+             popup = paste("Property use:",severe$PROPERTY_USE_DESC,"<br/>",
+                           "Borough:", severe$BOROUGH_DESC,"<br/>",
+                           "Date and time:",  severe$INCIDENT_DATE_TIME)) %>%
+  addLegend(pal = pal, values = ~severe$PROPERTY_USE_DESC, title = "Property use")
+
+map_severe_fires_type
+```
+
+##### b) Cluster
+
+Add marker clustering, so that zooming in will reveal the individual locations but the zoomed out map only shows the clusters. Show the map with clusters.
+
+```{r cluster}
+
+map_severe_fires_cluster <- leaflet(severe) %>%
+  setView(lng = -74.0060, lat = 40.7128, zoom = 11) %>%
+  addProviderTiles(providers$CartoDB.PositronNoLabels) %>%
+  addCircleMarkers(color = color_prop_use,
+             label = ~htmlEscape(as.character(PROPERTY_USE_DESC)),
+             clusterOptions = markerClusterOptions(),
+             popup = paste("Property use:",severe$PROPERTY_USE_DESC,"<br/>",
+                           "Borough:", severe$BOROUGH_DESC,"<br/>",
+                           "Date and time:",  severe$INCIDENT_DATE_TIME))
+
+map_severe_fires_cluster
+
+
+```
+
+#### 3. Fire Houses
+
+The second data file contains the locations of the 218 firehouses in New York City. Start with the non-clustered map (2b) and now adjust the size of the circle markers by severity (`TOTAL_INCIDENT_DURATION` or `UNITS_ONSCENE` seem plausible options). More severe incidents should have larger circles on the map. On the map, also add the locations of the fire houses. Add two layers ("Incidents", "Firehouses") that allow the user to select which information to show. 
+
+```{r map_incidents_firehouses}
+
+map_severe_fires_firehouses <- leaflet(severe) %>%
+  setView(lng = -74.0060, lat = 40.7128, zoom = 11) %>%
+  addProviderTiles(providers$CartoDB.PositronNoLabels) %>%
+  addCircleMarkers(data = listings, 
+                   lng = ~as.numeric(Longitude), 
+                   lat = ~as.numeric(Latitude),
+                   label = ~htmlEscape(as.character(Borough)),
+                   color = "black",
+                   radius = 5, 
+                   fill = TRUE,
+                   group = "Firehouses") %>%
+  addCircleMarkers(color = color_prop_use,
+             radius = ~UNITS_ONSCENE/5,
+             label = ~htmlEscape(as.character(PROPERTY_USE_DESC)),
+             fill = TRUE,
+             popup = paste("Property use:", severe$PROPERTY_USE_DESC,"<br/>",
+                           "Borough:", severe$BOROUGH_DESC,"<br/>",
+                           "Date and time:",severe$INCIDENT_DATE_TIME),
+             group = "Incidents") %>%
+  addLegend(pal = pal, values = ~severe$PROPERTY_USE_DESC, title = "Property use") %>%
+  addLayersControl(
+    baseGroups = c("Incidents", "Firehouses"),
+    options = layersControlOptions(collapsed = FALSE)
+  )
+
+map_severe_fires_firehouses
+
+
+```
+
+#### 4. Distance from Firehouse and Response Time
+
+We now want to investigate whether the distance of the incident from the nearest firehouse varies across the city. 
+
+##### a) Calculate Distance
+
+For all incident locations, identify the nearest firehouse and calculate the distance between the firehouse and the incident location. Provide a scatter plot showing the time until the first engine arrived (the variables `INCIDENT_DATE_TIME` and `ARRIVAL_DATE_TIME`) will be helpful. If there are any interesting patterns to highlight, feel free to do so.
+
+*I started with the basic scatterplot, that showed that there wasn't much of a pattern: on the contrary, there seems to be almost no connection between reaction time and distance to firestation. Next, I use sizes and colours of point to highlight incidents that were distant or took a long time to reach. Again, no clear pattern emerged. Finally, I used the zip code information for the fires together with a shapefile of New York zip code areas to see if there are any patterns by location. This time it seemed like some patterns emerged, as especially neighbourhoods that were in the periphery or the very center of the city (Manhattan) has unusually long reaction times.*
+
+```{r get_distance_matrix}
+
+listings <- filter(listings, !is.na(Latitude))
+distances <- distm(severe@coords[,c("Longitude", "Latitude")], listings[, c("Longitude", "Latitude")], fun = distVincentyEllipsoid)
+
+min_indexes <- distances %>%
+  as.data.frame() %>%
+  apply(1, which.min)
+
+min_distances <- distances %>%
+  as.data.frame() %>%
+  apply(1, min)
+
+severe$closet_station_index <- min_indexes
+severe$station_distance <- min_distances
+
+reaction_time <- (parse_date_time(severe$ARRIVAL_DATE_TIME, '%m/%d/%Y %I:%M:%S %p') -
+  parse_date_time(severe$INCIDENT_DATE_TIME, '%m/%d/%Y %I:%M:%S %p'))
+
+severe$reaction_time <- duration(as.double(reaction_time), "seconds")
+
+## Initial approach to get distance matrix below. For-loop took too long to run, so I vectorized the function per a recommendation from professor Brambor.
+
+# listings$points <- paste(listings$Longitude, listings$Latitude, sep = ", ")
+# severe@data$points <- paste(severe@coords[,1], severe@coords[,2], sep = ", ")
+#distances <- matrix(data = NA, nrow = length(listings$points), ncol = length(severe@data$points))
+
+#for(i in 1:length(listings$points)) {
+#  point1 <- as.double(unlist(str_extract_all(listings$points[i], #"[[:digit:]]+\\.*[[:digit:]]*")))
+#  print(point1)
+#  for(j in 1:length(severe@data$points)) {
+#    point2 <- as.double(unlist(str_extract_all(severe@data$points[j], #"[[:digit:]]+\\.*[[:digit:]]*")))
+#    print(point2)
+#    distances[i, j] <- distCosine(point1,point2)
+#    print(distances[i, j])
+#  }
+#} 
+
+#write.csv(as.data.frame(distances), file = "distances.csv")
+
+```
+
+```{r scatterplot_incident_times}
+
+ggplot(severe@data, aes(x = reaction_time, y = station_distance)) +
+  geom_point() +
+  scale_x_time(limits = c("00:00:00","00:40:00")) + 
+  labs(title = "Distance does not equal reaction time for the fire department", subtitle = "No clear relationship between reaction time and distance to station", x = "Reaction time (minutes)", y = "Distance to station (feet)") +
+  theme_few()
+
+```
+
+##### b) Map of Response Times
+
+Provide a map visualization of response times. Feel free to differentiate by incident type / property affected etc. if that is interesting.
+
+```{r}
+
+pal_distance <- colorNumeric(
+  palette = "Reds",
+  domain = severe$station_distance)
+
+pal_time <- colorNumeric(
+  palette = "Reds",
+  domain = as.double(severe$reaction_time))
+
+map_reaction_times <- leaflet(severe) %>%
+  setView(lng = -74.0060, lat = 40.7128, zoom = 11) %>%
+  addProviderTiles(providers$CartoDB.PositronNoLabels) %>%
+  addCircleMarkers(color = ~pal_time(as.double(reaction_time)),
+                   radius = ~reaction_time/100,
+                   label = ~htmlEscape(as.character(PROPERTY_USE_DESC)),
+                   group = "Reaction time",
+                   popup = paste("Property use:",severe$PROPERTY_USE_DESC,"<br/>",
+                           "Borough:", severe$BOROUGH_DESC,"<br/>",
+                           "Date and time:",  severe$INCIDENT_DATE_TIME)) %>%
+  addCircleMarkers(color = ~pal_distance(station_distance),
+                   radius = ~station_distance/500,
+                   label = ~htmlEscape(as.character(PROPERTY_USE_DESC)),
+                   group = "Distance",
+                   popup = paste("Property use:",severe$PROPERTY_USE_DESC,"<br/>",
+                           "Borough:", severe$BOROUGH_DESC,"<br/>",
+                           "Date and time:",  severe$INCIDENT_DATE_TIME)) %>%
+  addLayersControl(
+    baseGroups = c("Reaction time", "Distance"),
+    options = layersControlOptions(collapsed = FALSE))
+
+map_reaction_times
+
+```
+
+```{r}
+
+communities <- readOGR("nycd_18a/nycd.shp")
+zip_codes <- readOGR("ZIP_CODE_040114/ZIP_CODE_040114.shp")
+
+zip_codesWGS84 <- spTransform(zip_codes, CRS("+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"))
+
+severe_zip <- severe@data %>%
+  group_by(ZIP_CODE) %>%
+  summarise(mean_reaction_time = mean(reaction_time), 
+            mean_station_distance = mean(station_distance))
+
+
+zip_codesWGS84 <- merge(zip_codesWGS84, severe_zip, by.x = "ZIPCODE", by.y = "ZIP_CODE")
+
+time_distance_zipcode <- leaflet(zip_codesWGS84) %>% 
+  setView(lng = -74.0060, lat = 40.7128, zoom = 11) %>%
+  addProviderTiles(providers$CartoDB.PositronNoLabels) %>%
+  addPolygons(color = "#444444", weight = 1, smoothFactor = 0.5,
+              opacity = 1.0, fillOpacity = 0.9,
+              fillColor = ~colorQuantile("Reds", mean_reaction_time)(mean_reaction_time),
+              highlightOptions = highlightOptions(color = "white", weight = 2,
+                                                  bringToFront = TRUE),
+              group = "Time",
+              label = ~htmlEscape(as.character(mean_reaction_time))) %>%
+  addPolygons(color = "#444444", weight = 1, smoothFactor = 0.5,
+              opacity = 1.0, fillOpacity = 0.9,
+              fillColor = ~colorQuantile("Reds", mean_station_distance)(mean_station_distance),
+              highlightOptions = highlightOptions(color = "white", weight = 2,
+                                                  bringToFront = TRUE),
+              group = "Distance",
+              label = ~htmlEscape(as.character(mean_station_distance))) %>%
+  addLayersControl(
+    baseGroups = c("Time", "Distance"),
+    options = layersControlOptions(collapsed = FALSE)
+  )
+
+time_distance_zipcode
+
+```
+
+## Submission
+
+Please follow the [instructions](/Exercises/homework_submission_instructions.md) to submit your homework. The homework is due on Wednesday, March 21.
+
+## Please stay honest!
+
+If you do come across something online that provides part of the analysis / code etc., please no wholesale copying of other ideas. We are trying to evaluate your abilities to visualized data not the ability to do internet searches. Also, this is an individually assigned exercise -- please keep your solution to yourself.
