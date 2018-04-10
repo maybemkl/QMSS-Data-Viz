@@ -1,0 +1,701 @@
+---
+title: "Assignment 3: Kickstarter Projects"
+author: Mikael Brunila
+date: 2017-03-28
+always_allow_html: yes
+output: 
+  html_document:
+    keep_md: true
+---
+
+Text Mining Kickstarter Projects
+================================
+
+```{r setup, include=FALSE, warning=FALSE, message=FALSE, echo=FALSE}
+
+knitr::opts_chunk$set(
+	echo = TRUE,
+	message = FALSE,
+	warning = FALSE
+)
+options(scipen=999)
+
+library(broom)
+library(DT)
+library(ggmap)
+library(ggplot2)
+library(ggthemes)
+library(htmltools)
+library(leaflet)
+library(lubridate)
+library(magrittr)
+library(qdap)
+library(quanteda)
+library(rgdal)
+library(SnowballC)
+library(stringr)
+library(tidytext)
+library(tidyverse)
+library(tm)
+library(wordcloud)
+
+```
+
+## Overview
+
+Kickstarter is an American public-benefit corporation based in Brooklyn, New York, that maintains a global crowd funding platform focused on creativity.  The company's stated mission is to "help bring creative projects to life". 
+
+Kickstarter has reportedly received more than $1.9 billion in pledges from 9.4 million backers to fund 257,000 creative projects, such as films, music, stage shows, comics, journalism, video games, technology and food-related projects.
+
+For this assignment, I am asking you to analyze the descriptions of kickstarter projects to identify commonalities of successful (and unsuccessful projects) using the text mining techniques we covered in the past two lectures. 
+
+## Data
+
+The dataset for this assignment is taken from [webroboto.io ‘s repository](https://webrobots.io/kickstarter-datasets/). They developed a scrapper robot that crawls all Kickstarter projects monthly since 2009. We will just take data from the most recent crawl on 2018-02-15.
+
+To simplify your task, I have downloaded the files and partially cleaned the scraped data. In particular, I converted several JSON columns, corrected some obvious data issues, and removed some variables that are not of interest (or missing frequently). I have also  subsetted the data to only contain projects originating in the United States (to have only English language and USD denominated projects).
+
+The data is contained in the file `kickstarter_projects.csv` and contains about 150,000 projects and about 20 variables.
+
+```{r data}
+
+kickstarter <- read.csv("kickstarter_projects.csv")
+dim(kickstarter)
+colnames(kickstarter)
+
+```
+
+## Tasks for the Assignment
+
+### 1. Identifying Successful Projects
+
+#### a) Success by Category
+
+There are several ways to identify success of a project:  
+  - State (`state`): Whether a campaign was successful or not.   
+  - Pledged Amount (`pledged`)   
+  - Achievement Ratio: Create a variable `achievement_ratio` by calculating the percentage of the original monetary `goal` reached by the actual amount `pledged` (that is `pledged`\\`goal` *100).    
+  - Number of backers (`backers_count`)  
+  - How quickly the goal was reached (difference between `launched_at` and `state_changed_at`) for those campaigns that were successful.  
+
+Use one or more of these measures to visually summarize which categories were most successful in attracting funding on kickstarter. Briefly summarize your findings.
+
+```{r}
+
+kickstarter$achievement_ratio <- 100*(kickstarter$pledged / kickstarter$goal)
+kickstarter$goal_time <- lubridate::as_date(kickstarter$state_changed_at) - lubridate::as_date(kickstarter$launched_at)
+
+ggplot(kickstarter, aes(x = pledged, y = backers_count, color = state)) +
+  geom_jitter(na.rm=TRUE) +
+  geom_text(data = head(arrange(kickstarter, desc(pledged), desc(backers_count)), 20),
+          aes(pledged, backers_count, label = substr(name, 1, 20)),
+          size = 2, color = "black", na.rm=TRUE) +
+  theme_few()
+
+ggplot(kickstarter, aes(x = achievement_ratio, y = backers_count, color = state)) +
+  geom_jitter(na.rm=TRUE) +
+  geom_text(data = head(arrange(kickstarter, desc(backers_count)), 20),
+          aes(achievement_ratio, backers_count, label = substr(name, 1, 20)),
+          size = 2, color = "black", na.rm=TRUE) +
+  theme_few()
+
+ggplot(kickstarter, aes(x = pledged, y = achievement_ratio, color = state)) +
+  geom_jitter(na.rm=TRUE) +
+  theme_few() +
+  geom_text(data = head(arrange(kickstarter, desc(achievement_ratio)), 20),
+          aes(pledged, achievement_ratio, label = substr(name, 1, 20)),
+          size = 2, color = "black", na.rm=TRUE)
+
+ggplot(kickstarter, aes(x = pledged, y = goal_time, color = state)) +
+  geom_jitter(na.rm=TRUE) +
+  theme_few() +
+  geom_text(data = head(arrange(kickstarter, desc(pledged)), 20),
+            aes(pledged, goal_time, label = substr(name, 1, 20)),
+            size = 2, color = "black", na.rm=TRUE)
+
+ggplot(kickstarter, aes(x = goal_time, y = achievement_ratio, color = state)) +
+  geom_jitter(na.rm=TRUE) +
+  theme_few() +
+  geom_text(data = head(arrange(kickstarter, desc(goal_time)), 20),
+          aes(goal_time, achievement_ratio, label = substr(name, 1, 20)),
+          size = 2, color = "black", na.rm=TRUE)
+
+most_successful <- kickstarter %>%
+  group_by(achievement_ratio, backers_count, pledged, goal_time) %>%
+  arrange(desc(achievement_ratio), desc(backers_count), desc(goal_time), desc(pledged))
+
+most_successful <- most_successful[!(duplicated(most_successful$id)),]
+least_successful <- tail(most_successful, 1000)
+most_successful <- most_successful[1:1000,]
+
+ggplot(most_successful, aes(x = pledged, y = achievement_ratio, color = state)) +
+  geom_jitter(na.rm=TRUE) +
+  theme_few() +
+  geom_text(data = head(arrange(most_successful, desc(achievement_ratio)), 20),
+          aes(pledged, achievement_ratio, label = substr(name, 1, 20)),
+          size = 2, color = "black", na.rm=TRUE)
+
+ggplot(least_successful, aes(x = pledged, y = achievement_ratio, color = state)) +
+  geom_jitter() +
+  theme_few() +
+  geom_text(data = head(arrange(least_successful, desc(achievement_ratio)), 20),
+          aes(pledged, achievement_ratio, label = substr(name, 1, 20)),
+          size = 2, color = "black", na.rm=TRUE)
+
+```
+
+*I tried a number of different metrics, plotting them against each other as scatterplot. Out of the suggested metrics, none really correlate with each other. The obvious exception is the amount pledged and the amount of backers. Due to this, I simply grouped by several variables, arrange the data in a descending order and grabbed the top 1000 rows for the most succesful data, following the instruction in #2.*
+
+#### **BONUS ONLY:** b) Success by Location
+
+Now, use the location information to calculate the total number of successful projects by state (if you are ambitious, normalize by population). Also, identify the Top 50 "innovative" cities in the U.S. (by whatever measure you find plausible). Provide a leaflet map showing the most innovative states and cities in the U.S. on a single map based on these information.
+
+*Proceeding to the maps, I produced two lists of top states and top cities along with a leaflet map of these. The radius of the cities shows the amount of projects in that city and the depth of the color of states the amount of projects there. States with no projects are shaded with gray.*
+
+```{r innovation_by_state}
+
+most_successful$location <- paste(most_successful$location_town, most_successful$location_state, sep = ", ")
+
+projects_by_state <- most_successful %>%
+  group_by(location_state) %>%
+  count(location_state) %>%
+  arrange(desc(n))
+
+projects_by_city <- most_successful %>%
+  group_by(location) %>%
+  count(location) %>%
+  arrange(desc(n)) %>%
+  head(50)
+
+datatable(projects_by_state, colnames = c("State", "Projects")) 
+datatable(projects_by_city, colnames = c("Top innovative cities", "Projects")) 
+
+top_cities <- subset(most_successful, location %in% projects_by_city$location)
+locations <- as.data.frame(unique(top_cities $location),
+                           stringsAsFactors = FALSE)
+names(locations) <- c("Location")
+locations$Location <- as.character(locations$Location)
+
+lon_lats <- ggmap::geocode(locations$Location)
+for(i in 1:length(lon_lats$lon)) {
+  if(is.na(lon_lats$lon[[i]])){
+    lon_lats[i, ] <- ggmap::geocode(locations$Location[i])
+  }
+}
+
+locations <- cbind(locations, lon_lats)
+top_cities <- merge(top_cities, locations, by.x = "location", by.y = "Location")
+projects_by_city <- merge(projects_by_city, locations,  by.x = "location", by.y = "Location")
+
+us_states <- readOGR("cb_2017_us_state_500k/cb_2017_us_state_500k.shp")
+projects_by_state <- merge(us_states, projects_by_state, by.x = "STUSPS", by.y = "location_state")
+
+map_innovation <- leaflet(projects_by_city) %>%
+  setView(lng = -98.5795, lat = 39.8283, zoom = 4) %>%
+  addProviderTiles(providers$CartoDB.PositronNoLabels) %>%
+  addPolygons(data = projects_by_state, color = ~htmlEscape(n), weight = 1, smoothFactor = 0.5,
+            opacity = 1.0, fillOpacity = 0.9,
+            fillColor = ~colorQuantile("Reds", n)(n),
+            highlightOptions = highlightOptions(color = "white", weight = 2,
+                                                bringToFront = TRUE),
+            group = "States",
+            label = ~htmlEscape(as.character(NAME))) %>%
+  addCircleMarkers(color = "blue",
+             radius = ~n/5,
+             label = ~htmlEscape(as.character(location)),
+             fill = TRUE,
+             lng = ~as.numeric(lon), 
+             lat = ~as.numeric(lat),
+             group = "Cities") %>%
+  addLayersControl(
+     baseGroups = c("States", "Cities"),
+     options = layersControlOptions(collapsed = FALSE)
+  )
+
+map_innovation
+
+
+```
+
+### 2. Writing your success story
+
+Each project contains a `blurb` -- a short description of the project. While not the full description of the project, the short headline is arguably important for inducing interest in the project (and ultimately popularity and success). Let's analyze the text.
+
+#### a) Cleaning the Text and Word Cloud
+
+To reduce the time for analysis, select the 1000 most successful projects and a sample of 1000 unsuccessful projects. Use the cleaning functions introduced in lecture (or write your own in addition) to remove unnecessary words (stop words), syntax, punctuation, numbers, white space etc. Note, that many projects use their own unique brand names in upper cases, so try to remove these fully capitalized words as well (since we are aiming to identify common words across descriptions). Stem the words left and complete the stems. Create a document-term-matrix.
+
+*I start by writing a number of helper functions to perform cleaning and stemming. The last function is from the lecture notes.*
+
+```{r corpus_functions}
+
+# Function to remove URLs
+removeURL <- content_transformer(function(x) gsub("(f|ht)tp(s?)://\\S+", "", x, perl=TRUE))
+
+clean_corpus <- function(corpus) {
+  corpus <- corpus %>%
+    tm_map(removeURL) %>%
+    tm_map(content_transformer(replace_symbol)) %>%
+    tm_map(content_transformer(tolower)) %>%
+    tm_map(stripWhitespace) %>%
+    tm_map(removePunctuation) %>%
+    tm_map(removeNumbers) %>%
+    tm_map(removeWords, stopwords("english"))
+}
+
+stemCompletion2 <- function(x, dictionary) {
+   x <- unlist(strsplit(as.character(x), " "))
+   x <- x[x != ""]
+   x <- stemCompletion(x, dictionary = dictionary)
+   x <- paste(x, sep="", collapse=" ")
+   PlainTextDocument(stripWhitespace(x))
+}
+
+```
+
+*Next I produce separate corpora for both the most succesful and least succesful projects.*
+
+```{r corpus_most}
+
+VCorpus(DataframeSource(select(most_successful, blurb, id)))
+
+most_corpus_raw <- Corpus(DataframeSource(as.data.frame(most_successful$blurb)))
+most_corpus_raw$meta$id <- most_successful$id
+
+most_corpus_raw[[1]]$content
+most_corpus_raw[[1]]$meta
+
+# Process corpus
+most_corpus <- clean_corpus(most_corpus_raw)
+most_corpus_stemmed <- tm_map(most_corpus, stemDocument)
+most_corpus_completed <- tm_map(most_corpus_stemmed, stemCompletion2, dictionary = most_corpus)
+
+# Print five first blurbs after preprocessing
+for (i in 1:5) {
+    cat(paste("[[", i, "]] ", sep = " "))
+    writeLines(as.character(most_corpus[[i]]))
+}
+
+most_dtm <- DocumentTermMatrix(most_corpus_completed)
+most_dtm$dimnames$Docs <- as.character(most_corpus_completed$meta$id)
+
+most_tdm <- TermDocumentMatrix(most_corpus_completed)
+most_tdm$dimnames$Docs <- as.character(most_corpus_completed$meta$id)
+```
+
+```{r corpus_least}
+
+VCorpus(DataframeSource(select(least_successful, blurb, id)))
+
+least_corpus_raw <- Corpus(DataframeSource(as.data.frame(least_successful$blurb)))
+
+least_corpus_raw$meta$id <- least_successful$id
+
+least_corpus_raw[[1]]$content
+least_corpus_raw[[1]]$meta
+
+# Process corpus
+least_corpus <- clean_corpus(least_corpus_raw)
+least_corpus_stemmed <- tm_map(least_corpus, stemDocument)
+least_corpus_completed <- tm_map(least_corpus_stemmed, stemCompletion2, dictionary = least_corpus)
+
+# Print five first blurbs after preprocessing
+for (i in 1:5) {
+    cat(paste("[[", i, "]] ", sep = " "))
+    writeLines(as.character(least_corpus[[i]]))
+}
+
+least_dtm <- DocumentTermMatrix(least_corpus_completed)
+least_dtm$dimnames$Docs <- as.character(least_corpus_completed$meta$id)
+# least_dtm <- removeSparseTerms(least_dtm, sparse = 0.99999999999999)
+
+least_tdm <- TermDocumentMatrix(least_corpus_completed)
+least_tdm$dimnames$Docs <- as.character(least_corpus_completed$meta$id)
+# least_tdm <- removeSparseTerms(least_tdm, sparse = 0.95)
+
+```
+
+Provide a word cloud of the most frequent or important words (your choice which frequency measure you choose) among the most successful projects.
+
+*The wordclouds below show frequencies of words in both the one thousand most and least succcesful projects. Many of the words seem to be the same.*
+
+```{r wordcloud_most}
+
+most_dtm_tidy <- tidy(most_dtm)
+most_tdm_tidy <- tidy(most_tdm)
+
+most_terms <- most_dtm_tidy %>%
+  group_by(term) %>%
+  summarise(n = sum(count)) %>%
+  top_n(n = 100, wt = n)
+
+# Ended up not using this
+# most_tf_idf <- most_dtm_tidy %>%
+#  group_by(term) %>%
+#  tidytext::bind_tf_idf(term, document, count) %>%  
+#  arrange(desc(tf_idf)) 
+
+wordcloud(words = most_terms$term, 
+          freq = as.integer(most_terms$n),
+          scale = c(4, .1),
+          min.freq = 0, 
+          max.words = 100,
+          colors = brewer.pal(8, "Dark2")
+          )
+
+```
+
+```{r wordcloud_least}
+
+least_dtm_tidy <- tidy(least_dtm)
+least_tdm_tidy <- tidy(least_tdm)
+
+least_terms <- least_dtm_tidy %>%
+  group_by(term) %>%
+  summarise(n = sum(count)) %>%
+  top_n(n = 100, wt = n)
+
+least_tf_idf <- least_dtm_tidy %>%
+  group_by(term) %>%
+  tidytext::bind_tf_idf(term, document, count) %>%  
+  arrange(desc(tf_idf)) 
+
+wordcloud(words = least_terms$term, 
+          freq = as.integer(least_terms$n),
+          scale = c(4, .1),
+          min.freq = 0, 
+          max.words = 100,
+          colors = brewer.pal(8, "Dark2")
+          )
+
+```
+
+#### b) Success in words
+
+Provide a pyramid plot to show how the words between successful and unsuccessful projects differ in frequency. A selection of 10 - 20 top words is sufficient here.  
+
+*I worked on the pyramid plot quite a while, but had issues reordering them by frequency, even though I sued the code from the class and a dataframe that to my eye followed the same structure. Nonetheless, the pyramid contains the top words from the most and least successful projects.*
+
+```{r pyramid_plot}
+
+least_terms$success <- "least"
+most_terms$success <- "most"
+
+least_terms <- arrange(least_terms, n) %>%
+  arrange(n) %>%
+  top_n(15, n)
+
+least_terms$n <- -1*(least_terms$n)
+
+most_terms <- arrange(most_terms, n) %>%
+  arrange(n) %>%
+  top_n(15, n)
+
+terms <- rbind(least_terms, most_terms)
+terms$n <- as.integer(terms$n)
+terms$frequency <- ifelse(terms$n < 0, (-1)*terms$n, terms$n)
+
+terms <- arrange(terms, desc(frequency))
+
+terms_wide <- spread(terms, success, n)
+# terms_wide$frequency <- ifelse(is.na(terms_wide$frequency), 0, terms_wide$frequency)
+# terms_wide$n <- terms_wide$frequency
+# terms_wide$frequency <- (-1)*as.numeric(terms_wide$success) + as.numeric(terms_wide$most)
+
+ggplot(terms, aes(x = reorder(term, n), 
+                  y = n, fill = success)) +
+  geom_bar(data = filter(terms, success == "least"), stat = "identity") +  
+  geom_bar(data = filter(terms, success == "most"), stat = "identity") + 
+  scale_fill_brewer(palette = "Set1", direction = 1) + 
+  coord_flip() + 
+  scale_y_continuous(breaks = seq(-150, 150, 25)) + ylab("") +
+  theme_few()
+
+```
+
+#### c) Simplicity as a virtue
+
+These blurbs are short in length (max. 150 characters) but let's see whether brevity and simplicity still matters. Calculate a readability measure (Flesh Reading Ease, Flesh Kincaid or any other comparable measure) for the texts. Visualize the relationship between the readability measure and one of the measures of success. Briefly comment on your finding.
+
+*The Flesch simplicity measure does not seem to have any clear relationship to the success measures of pledged amount, achievement ratio, time required to reach goal or the amount of backers.*
+
+```{r readability}
+
+readability_scores <- textstat_readability(as.character(most_successful$blurb), 
+        measure = c('Flesch','Flesch.Kincaid',
+                  'meanSentenceLength','meanWordSyllables'))
+
+
+readability_scores[colnames(most_successful)] <- most_successful
+
+ggplot(readability_scores, aes(x = Flesch, y = pledged, color = state)) +
+  geom_jitter() +
+  theme_few()
+
+ggplot(readability_scores, aes(x = Flesch, y = achievement_ratio, color = state)) +
+  geom_jitter() +
+  theme_few()
+
+ggplot(readability_scores, aes(x = Flesch, y = goal_time, color = state)) +
+  geom_jitter() +
+  theme_few()
+
+ggplot(readability_scores, aes(x = Flesch, y = backers_count, color = state, size = pledged)) +
+  geom_jitter() +
+  theme_few()
+
+```
+
+### 3. Sentiment
+
+Now, let's check whether the use of positive / negative words or specific emotions helps a project to be successful. 
+
+#### a) Stay positive
+
+Calculate the tone of each text based on the positive and negative words that are being used. You can rely on the Hu & Liu dictionary provided in lecture or use the Bing dictionary contained in the tidytext package (`tidytext::sentiments`). Visualize the relationship between tone of the document and success. Briefly comment.
+
+*In the graph below, sentiment is a measure of how positive or negative a blurb is. There are some outliers, but generally the trend seems to be that more positive blurbs get more support.*
+
+```{r tone, message=FALSE, warning=FALSE}
+
+pos <- read.table("data/dictionaries/positive-words.txt", as.is=T)
+neg <- read.table("data/dictionaries/negative-words.txt", as.is=T)
+
+sentiment <- function(words=c("really great good stuff bad")){
+  require(quanteda)
+  tok <- quanteda::tokens(words)
+  pos.count <- sum(tok[[1]] %in% pos[,1])
+  neg.count <- sum(tok[[1]] %in% neg[,1])
+  out <- (pos.count - neg.count) / (pos.count + neg.count)
+  pos_words <- tok[[1]][which(tok[[1]] %in% pos[,1])]
+  neg_words <- tok[[1]][which(tok[[1]] %in% neg[,1])]
+  return(list(pos.count, neg.count, out, list(pos_words), list(neg_words)))
+}
+
+most_successful$pos <- NA
+most_successful$neg <- NA
+most_successful$out <- NA
+most_successful$pos_words <- NA
+most_successful$neg_words <- NA
+
+for(i in 1:length(most_successful$blurb)) {
+  temp_sent <- sentiment(as.character(most_successful$blurb[[i]]))
+  most_successful$pos[[i]] <- temp_sent[[1]]
+  most_successful$neg[[i]] <- temp_sent[[2]]
+  most_successful$out[[i]] <- temp_sent[[3]]
+  most_successful$pos_words[[i]] <- toString(unlist(temp_sent[[4]]))
+  most_successful$neg_words[[i]] <- toString(unlist(temp_sent[[5]]))
+}
+
+most_successful_tone <- most_successful %>%
+  filter(!is.nan(out))
+
+least_successful$pos <- NA
+least_successful$neg <- NA
+least_successful$out <- NA
+least_successful$pos_words <- NA
+least_successful$neg_words <- NA
+
+for(i in 1:length(least_successful$blurb)) {
+  temp_sent <- sentiment(as.character(least_successful$blurb[[i]]))
+  least_successful$pos[[i]] <- temp_sent[[1]]
+  least_successful$neg[[i]] <- temp_sent[[2]]
+  least_successful$out[[i]] <- temp_sent[[3]]
+  least_successful$pos_words[[i]] <- toString(unlist(temp_sent[[4]]))
+  least_successful$neg_words[[i]] <- toString(unlist(temp_sent[[5]]))
+}
+
+least_successful_tone <- least_successful %>%
+  filter(!is.nan(out))
+
+ggplot(most_successful_tone, aes(x = out, y = pledged)) +
+  geom_jitter(color = "blue") +
+  geom_smooth(method=lm, color = "red") +
+  labs(x = "sentiment", y = "amount pledged") +
+  theme_few()
+
+```
+
+#### b) Positive vs negative
+
+Segregate all 2,000 blurbs into positive and negative texts based on their polarity score calculated in step (a). Now, collapse the positive and negative texts into two larger documents. Create a document-term-matrix based on this collapsed set of two documents. Generate a comparison cloud showing the most-frequent positive and negative words.  
+
+*I had a hard time deciphering the instructions for this one, but hopely I got it right. I ended up producing a total of six word clouds. The first block of code, creates a Corpus with two documents, one for positive and another for negative terms. The comparison cloud compares these, using the **whole** corpus of the blurbs.* 
+
+*The two wordcloud show words in the blurb of positive and negative blurbs, respectively. The second block of code, adopts a different approach. Here the corpus concists only of the actual negative and positive words. The comparison cloud compares these, the two wordclouds show their prevalence in unsuccesful and successful projects.* 
+
+```{r positive_vs_negative_1}
+
+# Preprocessing
+most_least_successful <- rbind(most_successful_tone, least_successful_tone)
+most_least_successful <- filter(most_least_successful, out != 0)
+
+positive <- paste(filter(most_least_successful, out == 1)$blurb, collapse = " ")
+negative <- paste(filter(most_least_successful, out == -1)$blurb, collapse = " ")
+
+doc_id <- c(1, 2)
+Positive <- positive
+Negative <- negative
+positive_negative_comparison <- data.frame(doc_id, text = c(Positive, Negative),
+                     stringsAsFactors = FALSE)
+
+# Actual corpus
+positive_negative_raw <- Corpus(DataframeSource(positive_negative_comparison))
+
+# Process corpus
+positive_negative_corpus <- clean_corpus(positive_negative_raw)
+positive_negative_stemmed <- tm_map(positive_negative_corpus, stemDocument)
+positive_negative_completed <- tm_map(positive_negative_stemmed, stemCompletion2, dictionary = positive_negative_corpus)
+
+positive_negative_dtm <- DocumentTermMatrix(positive_negative_completed)
+positive_negative_dtm$dimnames$Docs <- as.character(positive_negative_completed$meta$id)
+
+positive_negative_tdm <- TermDocumentMatrix(positive_negative_completed)
+positive_negative_tdm$dimnames$Docs <- as.character(positive_negative_completed$meta$id)
+
+comparison.cloud(as.matrix(positive_negative_tdm), colors = c("orange", "blue"), 
+                 scale=c(0.05, 2.2), title.size= 1, 
+                 max.words = 80)
+
+wordcloud(words = rownames(as.matrix(positive_negative_tdm)), 
+          freq = as.matrix(positive_negative_tdm)[,1],
+          scale = c(4, .1),
+          min.freq = 0, 
+          max.words = 100,
+          colors = brewer.pal(8, "Dark2")
+          )
+
+wordcloud(words = rownames(as.matrix(positive_negative_tdm)), 
+          freq = as.matrix(positive_negative_tdm)[,2],
+          scale = c(4, .1),
+          min.freq = 0, 
+          max.words = 100,
+          colors = brewer.pal(8, "Dark2")
+          )
+
+```
+
+```{r positive_vs_negative}
+
+# Preprocess
+most_least_successful <- rbind(most_successful_tone, least_successful_tone)
+
+positive <- most_least_successful %>%
+  filter(out > 0)
+
+negative <- most_least_successful %>%
+  filter(out < 0)
+
+# Actual corpus
+positive_corpus_raw <- Corpus(DataframeSource(as.data.frame(positive$pos_words)))
+positive_corpus_raw$meta$id <- positive$id
+
+positive_corpus_raw[[1]]$content
+positive_corpus_raw[[1]]$meta
+
+# Process corpus
+positive_corpus <- clean_corpus(positive_corpus_raw)
+positive_corpus_stemmed <- tm_map(positive_corpus, stemDocument)
+positive_corpus_completed <- tm_map(positive_corpus_stemmed, stemCompletion2, dictionary = positive_corpus)
+
+positive_dtm <- DocumentTermMatrix(positive_corpus_completed)
+positive_dtm$dimnames$Docs <- as.character(positive_corpus_completed$meta$id)
+
+positive_tdm <- TermDocumentMatrix(positive_corpus_completed)
+positive_tdm$dimnames$Docs <- as.character(positive_corpus_completed$meta$id)
+
+positive_dtm_tidy <- tidy(positive_dtm)
+
+positive_terms <- positive_dtm_tidy %>%
+  group_by(term) %>%
+  summarise(n = sum(count)) %>%
+  top_n(n = 100, wt = n)
+ 
+negative_corpus_raw <- Corpus(DataframeSource(as.data.frame(negative$neg_words)))
+negative_corpus_raw$meta$id <- negative$id
+
+negative_corpus_raw[[1]]$content
+negative_corpus_raw[[1]]$meta
+
+# Process corpus
+negative_corpus <- clean_corpus(negative_corpus_raw)
+negative_corpus_stemmed <- tm_map(negative_corpus, stemDocument)
+negative_corpus_completed <- tm_map(negative_corpus_stemmed, stemCompletion2, dictionary = negative_corpus)
+
+negative_dtm <- DocumentTermMatrix(negative_corpus_completed)
+negative_dtm$dimnames$Docs <- as.character(negative_corpus_completed$meta$id)
+
+negative_dtm_tidy <- tidy(negative_dtm)
+
+negative_terms <- negative_dtm_tidy %>%
+  group_by(term) %>%
+  summarise(n = sum(count)) %>%
+  top_n(n = 100, wt = n)
+
+wordcloud(words = positive_terms$term, 
+          freq = as.integer(positive_terms$n),
+          scale = c(4, .1),
+          min.freq = 0, 
+          max.words = 100,
+          colors = brewer.pal(8, "Dark2")
+          )
+
+wordcloud(words = negative_terms$term, 
+          freq = as.integer(negative_terms$n),
+          scale = c(4, .1),
+          min.freq = 0, 
+          max.words = 100,
+          colors = brewer.pal(8, "Dark2")
+          )
+```
+
+#### c) Get in their mind
+
+Now, use the NRC Word-Emotion Association Lexicon in the tidytext package to identify a larger set of emotions (anger, anticipation, disgust, fear, joy, sadness, surprise, trust). Again, visualize the relationship between the use of words from these categories and success. What is your finding?
+
+*In the final block of code, I produce a count for each sentiment for each observation. I then use these to colour a graph comparing the amount of pledgers and the amounts pledged. There is no clear pattern to discern.*
+
+```{r emotions}
+
+sentiments_bing <- tidytext::sentiments
+
+most_least_successful <- rbind(most_successful_tone, least_successful_tone)
+
+sentiment_cols <- unique(sentiments_bing$sentiment)
+sentiment_cols <- sentiment_cols[!is.na(sentiment_cols)]
+
+most_least_successful[sentiment_cols] <- 0
+
+for(i in 1:length(most_least_successful$blurb)) {
+  tok <- tokens(as.character(most_least_successful$blurb[[i]]))
+  most_least_successful$trust[[i]] <- sum(tok[[1]] %in% filter(sentiments_bing, sentiment == "trust")$word)
+  most_least_successful$fear[[i]] <- sum(tok[[1]] %in% filter(sentiments_bing, sentiment == "fear")$word)
+  most_least_successful$negative[[i]] <- sum(tok[[1]] %in% filter(sentiments_bing, sentiment == "negative")$word)
+  most_least_successful$sadness[[i]] <- sum(tok[[1]] %in% filter(sentiments_bing, sentiment == "sadness")$word)
+  most_least_successful$anger[[i]] <- sum(tok[[1]] %in% filter(sentiments_bing, sentiment == "anger")$word)
+  most_least_successful$surprise[[i]] <- sum(tok[[1]] %in% filter(sentiments_bing, sentiment == "surprise")$word)
+  most_least_successful$positive[[i]] <- sum(tok[[1]] %in% filter(sentiments_bing, sentiment == "positive")$word)
+  most_least_successful$disgust[[i]] <- sum(tok[[1]] %in% filter(sentiments_bing, sentiment == "disgust")$word)
+  most_least_successful$joy[[i]] <- sum(tok[[1]] %in% filter(sentiments_bing, sentiment == "joy")$word)
+  most_least_successful$anticipation[[i]] <- sum(tok[[1]] %in% filter(sentiments_bing, sentiment == "anticipation")$word)
+  most_least_successful$uncertainty[[i]] <- sum(tok[[1]] %in% filter(sentiments_bing, sentiment == "uncertainty")$word)
+  most_least_successful$litigious[[i]] <- sum(tok[[1]] %in% filter(sentiments_bing, sentiment == "litigious")$word)
+  most_least_successful$constraining[[i]] <- sum(tok[[1]] %in% filter(sentiments_bing, sentiment == "constraining")$word)
+  most_least_successful$superfluous[[i]] <- sum(tok[[1]] %in% filter(sentiments_bing, sentiment == "superfluous")$word)
+}
+
+most_least_successful$prevalent_emotion <- colnames(most_least_successful[sentiment_cols])[apply(most_least_successful[sentiment_cols],1,which.max)]
+
+ggplot(most_least_successful, aes(x = pledged, y = backers_count, color = prevalent_emotion)) +
+  geom_jitter() +
+  theme_few()
+
+```
+
+## Submission
+
+Please follow the [instructions](/Exercises/homework_submission_instructions.md) to submit your homework. The homework is due on Wednesday, April 4.
+
+## Please stay honest!
+
+If you do come across something online that provides part of the analysis / code etc., please no wholesale copying of other ideas. We are trying to evaluate your abilities to visualized data not the ability to do internet searches. Also, this is an individually assigned exercise -- please keep your solution to yourself.
