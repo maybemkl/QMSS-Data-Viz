@@ -1,0 +1,619 @@
+---
+title: "Assignment 3: U.S. Senators on Twitter"
+author: Thomas Brambor
+date: 2017-04-04
+always_allow_html: yes
+output: 
+  html_document:
+    keep_md: true
+---
+
+Network Analysis of U.S. Senate Tweets
+================================
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = TRUE)
+options(scipen=999)
+
+library(DT)
+library(GGally)
+library(ggplot2)
+library(ggraph)
+library(ggrepel)
+library(ggthemes)
+library(igraph)
+library(lubridate)
+library(magrittr)
+library(network)
+library(networkD3)
+library(plyr)
+library(rtweet)
+library(stringi)
+library(stringr)
+library(tidygraph)
+library(tidyverse)
+library(twitterAnalytics)
+library(visNetwork)
+library(widgetframe)
+
+```
+
+## Overview
+
+Twitter is a great tool to analyze the public interactions of political actors. For this assignment, I want you to use the information about who follows whom on Twitter as well as past tweets of the current U.S. Senate members to analyze how they interact and what they tweet about. 
+
+## Data
+
+#### Twitter Handles of Senators
+
+Twitter does not allow us to search for past tweets based on keywords, location, or topics (hashtags). However, we are able to obtain the past tweets of users if we specify their Twitter handle. The file `senators_twitter.csv` contains the Twitter handles of the current U.S. Senate members (obtained from [SocialSeer](https://www.socialseer.com/resources/us-senator-twitter-accounts/)). We will focus on the Senators' _official Twitter accounts_ (as opposed to campaign or staff members). I have also added information on the party affiliation of the Senators from [here](https://ballotpedia.org/List_of_current_members_of_the_U.S._Congress).
+
+#### Followers
+
+The file `senators_follow.csv` contains an edge list of connections between each pair of senators who are connected through a follower relationship (this information was obtained using the function `rtweet::lookup_friendships`). The file is encoded such that the `source` is a follower of the `target`. You will need to use the subset of `following = TRUE` to identify the connections for which the `source` follows the `target`.
+
+#### Tweets by Senators
+
+To make your life a bit easier, I have also already downloaded all available tweets for these Twitter accounts using the following code. You **do not need to repeat this step**. Simply rely on the file `senator_tweets.RDS` in the exercise folder.
+
+```{r, eval=TRUE, message=FALSE, warning=FALSE}
+
+# Read in the Senator Data
+senate <- read_csv("senators_twitter.csv")
+
+# Get Tweets
+#senator_tweets <- get_timelines(user = senate$`Official Twitter`,
+#    n = 3200, ## number of tweets to download (max is 3,200)
+#    )
+
+#saveRDS(senator_tweets, "senator_tweets.RDS")
+
+```
+
+```{r data, eval=TRUE, message=FALSE, warning=FALSE}
+
+# Read in the Tweets
+senator_tweets <- readRDS("senator_tweets.RDS")
+senator_follows <- read.csv("senators_follow.csv")
+
+# How limiting is the API limit?
+senator_tweets %>% 
+  group_by(screen_name) %>% 
+  summarize(n_tweet = n(),
+            oldest_tweet = min(created_at)) %>%
+  arrange(desc(oldest_tweet))
+
+```
+
+The data contains about 170k tweets and about 40 variables. Please note, that the API limit of 3,200 tweets per twitter handle actually cuts down the time period we can observe the most prolific Twitter users in the Senate down to only about one year into the past.
+
+## Tasks for the Assignment
+
+### 1. Who follows whom?
+
+#### a) Network of Followers
+
+Read in the edgelist of follower relationships from the file `senators_follow.csv`. Create a directed network graph. Identify the three senators who are followed by the most of their colleagues (i.e. the highest "in-degree") and the three senators who follow the most of their colleagues (i.e. the highest "out-degree"). [Hint: You can get this information simply from the data frame or use `igraph` to calculate the number of in and out connections: `indegree = igraph::degree(g, mode = "in")`.] Visualize the network of senators. In the visualization, highlight the party ID of the senator nodes with an appropriate color (blue = Democrat, red = Republican) and size the nodes by the centrality of the nodes to the network. Briefly comment.
+
+**The top three senators in terms of in- and out-degree are shown in two datatables. The network visualization of these networks can be found after these. I've used ggnet, with complimentary versions through three other libraries. I did to vastly different data structures).**
+
+```{r top3_out_in, message=FALSE, warning=FALSE}
+
+senator_follows_edges <- senator_follows %>%
+  filter(following == TRUE) %>%
+  select(source, target)
+
+g <- graph_from_edgelist(as.matrix(senator_follows_edges))
+V(g)$party <- as.character(senate$`Party affiliation`[match(V(g)$name, as.character(senate$`Official Twitter`))])
+
+indegree <- igraph::degree(g, mode = "in")
+outdegree <- igraph::degree(g, mode = "out")
+
+degrees_df <- data.frame(matrix(vector(), 100, 3,
+                dimnames=list(c(), c("name", "indegree", "outdegree"))),
+                stringsAsFactors=F)
+
+degrees_df$name <- names(indegree)
+degrees_df$indegree <- indegree
+degrees_df$outdegree <- outdegree
+
+datatable(arrange(degrees_df, desc(indegree)), colnames = c("Senator", "In-degree", "Out-degree"))
+datatable(arrange(degrees_df, desc(outdegree)), colnames = c("Senator", "In-degree", "Out-degree"))
+
+
+```
+
+```{r follower_network, message=FALSE, warning=FALSE}
+
+adj <- get.adjacency(g, names = TRUE)
+net <- network(adj, directed = TRUE)
+
+network::set.vertex.attribute(net, "party", V(g)$party)
+network::set.vertex.attribute(net, "color", ifelse((net %v% "party") == "Republican Party", "#E91D0E", "#232066"))
+network::set.vertex.attribute(net, "name", V(g)$name)
+
+for(i in 1:length((net %v% "party"))) {
+  if(is.na((net %v% "color")[[i]])) {
+    set.vertex.attribute(net, "color", "#206621", v = i)
+  }
+  if("Independent" %in% (net %v% "party")[[i]]) {
+    set.vertex.attribute(net, "color", "#616620", v = i)
+  }
+}
+
+ggnet2(net, size = "indegree", arrow.size = 2, 
+       label = TRUE, label.size = 2, 
+       edge.size = 0.05, legend.position = "none",
+       node.color = (net %v% "color"), node.label = "name")
+
+ggnet2(net, size = "outdegree", arrow.size = 2, 
+       label = TRUE, label.size = 2, 
+       edge.size = 0.05, legend.position = "none",
+       node.color = (net %v% "color"), node.label = "name")
+
+senators_tidy <- as_tbl_graph(g, directed = TRUE)
+
+ggraph(senators_tidy, layout = 'fr') + 
+  geom_node_point(aes(colour = party)) +
+  geom_edge_link(aes(edge_width = 0.05), alpha = 0.8) + 
+  geom_node_text(aes(label = name, size = 0.5), repel = TRUE) +
+  theme_graph()
+
+nodes <- senators_tidy %>% 
+  activate(nodes) %>% 
+  as_tibble() %>% 
+  dplyr::mutate(id = row_number())
+
+edges <- senators_tidy %>% 
+  activate(edges) %>% 
+  as_tibble()
+
+simpleNetwork(senator_follows_edges, 
+              nodeColour = "red", 
+              zoom=T,
+              fontSize = 16)
+
+visNetwork(nodes, edges) %>% 
+  visIgraphLayout(layout = "layout_with_fr") %>% 
+  visEdges(arrows = "middle")
+
+p2 <- forceNetwork(Links = as.data.frame(edges), 
+                   Nodes = as.data.frame(nodes), 
+                   Source = "from",
+                   Target = "to", 
+                   NodeID = "id",
+                   Group = "party",
+                   opacity = 0.4, zoom = TRUE)
+frameWidget(p2)
+
+
+```
+
+#### b) Communities
+
+Now let's see whether party identification is also recovered by an automated mechanism of cluster identification. Use the `cluster_walktrap` command in the `igraph` package to find densely connected subgraphs. 
+
+```{r, eval=TRUE, message=FALSE, warning=FALSE}
+
+# Sample Code for a graph object "g"
+wc <- cluster_walktrap(g)  # find "communities"
+members <- membership(wc)
+
+```
+
+Based on the results, visualize how well this automated community detection mechanism recovers the party affiliation of senators. This visualization need not be a network graph. Comment briefly. 
+
+**The walktrap algorithm does not seem to be very accurate. In the two panels we see how members of different parties are distributed between the two groups created by walktrap. It is hard to discern any pattern in the data and the distribution seems more or less random.**
+
+```{r, message=FALSE, warning=FALSE}
+
+senate$walktrap <- members
+senate <- merge(senate, degrees_df, by.x = "Official Twitter", by.y = "name")
+
+ggplot(data = senate, aes(x = indegree, y = outdegree, color = `Party affiliation`)) + 
+  geom_point() + 
+  facet_wrap(~walktrap) +
+  theme_few()
+
+```
+
+### 2. What are they tweeting about?
+
+From now on, rely on the information from the tweets stored in `senator_tweets.RDS`.
+
+#### a) Most Common Topics over Time
+
+Remove all tweets that are re-tweets (`is_retweet`) and identify which topics the senators tweet about. Rather than a full text analysis, just use the variable `hashtags` and identify the most common hashtags over time. Provide a visual summary.
+
+```{r senator_topics, message=FALSE}
+
+no_retweets <- senator_tweets %>%
+  filter(is_retweet == FALSE) %>%
+  merge(senate, by.x = "screen_name", by.y = "Official Twitter")
+
+no_retweets$year_created <- format(as.Date(no_retweets$created_at, format="%d/%m/%Y"),"%Y")
+no_retweets$year_month_created <- format(as.Date(no_retweets$created_at, format="%d/%m/%Y"),"%Y%m")
+no_retweets$hashtags <- tolower(no_retweets$hashtags)
+no_retweets$hashtags <- str_replace_all(no_retweets$hashtags, "c\\(", "")
+no_retweets$hashtags <- str_replace_all(no_retweets$hashtags, "[[:punct:]]", "")
+no_retweets$hashtags <- as.list(strsplit(no_retweets$hashtags, " "))
+
+hashtags_count <- no_retweets %>%
+  unnest(hashtags) %>%
+  group_by(year_created, `Party affiliation`, hashtags) %>%
+  filter(!is.na(hashtags)) %>%
+  count(hashtags)
+
+hashtags_retweets <- no_retweets %>%
+  unnest(hashtags) %>%
+  group_by(year_created, `Party affiliation`, hashtags) %>%
+  filter(!is.na(hashtags)) %>%
+  tally(retweet_count)
+
+names(hashtags_retweets)[names(hashtags_retweets) == 'n'] <- 'retweets'
+
+hashtags_full_noparty <- hashtags_retweets %>%
+  merge(hashtags_count) %>%
+  filter(year_created > 2012) %>%
+  ungroup() %>%
+  group_by(year_created) %>%
+  arrange(desc(year_created)) %>%
+  top_n(10)
+
+ggplot(data = hashtags_full_noparty, aes(x = n, y = retweets)) + 
+  geom_point() + 
+  labs(x = "Tweets", y = "Number of retweets") +
+  geom_text_repel(aes(label = hashtags), colour = "gray20", size = 2.5, force = 4) +
+  scale_y_log10() +
+  scale_x_log10() +
+  facet_wrap(~year_created) + 
+  theme_few()
+
+```
+
+#### b) Democrats vs. Republicans
+
+Some tweets are as old as 10 years but for some prolific users we observe a much shorter time span of Twitter activity. Feel free to subset the data to only include more recent tweets. Using the party ID variable (`Party affiliation`), identify how the choice of topics tweeted about (again using using hashtags) differs by party and visualize that information. 
+
+```{r, message=FALSE, warning=FALSE}
+
+hashtags_full <- hashtags_retweets %>%
+  merge(hashtags_count) %>%
+  filter(year_created > 2012) %>%
+  ungroup() %>%
+  group_by(year_created, `Party affiliation`) %>%
+  arrange(desc(year_created), `Party affiliation`) %>%
+  top_n(5)
+
+
+ggplot(data = hashtags_full, aes(x = n, y = retweets, color = `Party affiliation`)) + 
+  geom_point() + 
+  labs(x = "Tweets", y = "Number of retweets") +
+  geom_text_repel(aes(label = hashtags), colour = "gray20", size = 2, force = 4) +
+  scale_y_log10() +
+  scale_x_log10() +
+  facet_wrap(~year_created) + 
+  theme_few()
+
+```
+
+#### c) Gun Control I - Dems vs. Reps
+
+The democratic party seems broadly more supportive of gun control legislation. Try to identify a set of 5-10 hashtags that signal support for gun control legislation (e.g. "`NeverAgain`", `#guncontrol`, `#guncontrolnow`, `#Enough`) and others that are expressing support for the right to own guns (e.g. `#2ndamendment`, `#NRA`, `#liberals`). The site [ritetag.com](https://ritetag.com/best-hashtags-for/gun%20control) can help with that task. Using the subset of senator tweets that included these hashtags, show whether and how senators from different parties talk differently about the issue of gun legislation.
+
+**There is a clear difference. Republican hashtags are used consistently, in low volumes and over time. Democratic hashtags peak during crisis events, and at these moments go much more viral than republican hashtags.**
+
+```{r gun_control1, message=FALSE, warning=FALSE}
+
+guncontrol_hashtags <- readxl::read_xlsx("guncontrol_hashtags.xlsx", col_names = FALSE)
+guncontrol_hashtags$X__1 <- str_replace_all(guncontrol_hashtags$X__1, "[[:punct:]]", "")
+guncontrol_hashtags$X__1 <- stri_replace_all_charclass(guncontrol_hashtags$X__1, pattern = "\\p{WHITE_SPACE}", repl = "")
+
+guncontrol_hashtags <- c(guncontrol_hashtags$X__1, c("NeverAgain", "guncontrolnow", "Enough", "2ndamendment", "liberals"))
+
+guncontrol_tweets <- senator_tweets
+
+guncontrol_tweets$year_created <- format(as.Date(guncontrol_tweets$created_at, format="%d/%m/%Y"),"%Y")
+guncontrol_tweets$year_month_created <- format(as.Date(guncontrol_tweets$created_at, format="%d/%m/%Y"),"%Y%m")
+guncontrol_tweets$hashtags <- tolower(guncontrol_tweets$hashtags)
+guncontrol_tweets$hashtags <- str_replace_all(guncontrol_tweets$hashtags, "c\\(", "")
+guncontrol_tweets$hashtags <- str_replace_all(guncontrol_tweets$hashtags, "[[:punct:]]", "")
+guncontrol_tweets$hashtags <- as.list(strsplit(guncontrol_tweets$hashtags, " "))
+
+guncontrol_tweets <- guncontrol_tweets %>%
+  unnest(hashtags) %>%
+  filter(hashtags %in% guncontrol_hashtags)
+
+hashtag_count <- count(guncontrol_tweets, hashtags)
+
+guncontrol_tweets <- merge(guncontrol_tweets, senate, by.x = "screen_name", by.y = "Official Twitter")
+
+guncontrol_tweets <- guncontrol_tweets %>%
+  filter(hashtags %in% (hashtag_count$hashtags[hashtag_count$n > 9])) %>%
+  filter(hashtags != "tcot") %>%
+  filter(`Party affiliation` != "Independent") %>%
+  filter(year_created > 2011)
+
+ggplot(data = guncontrol_tweets, aes(x = created_at, 
+                                     y = favorite_count, color = `Party affiliation`)) + 
+  geom_jitter(aes(shape = is_retweet)) + 
+  scale_color_manual(values = c("#232066", "#E91D0E")) +
+  labs(x = "Date posted", y = "Favorites given to tweet", title = "Hashtags about gunviolence", subtitle = "How senators tweeted about gunviolence between 2012 and 2018") +
+  guides(shape = guide_legend(title = "Is retweet")) +
+  facet_wrap(~hashtags) + 
+  theme_few()
+
+```
+
+#### d) Gun Control II - Parkland Shooting
+
+On February 14, 2018, a mass shooting occurred at Marjory Stoneman Douglas High School in Parkland, Florida. Provide some visualization of how senators responded to the event in their Twitter communication.
+
+**The amount of tweets with hashtags was quite small, so I complemented with a text search on "Parkland" for tweets without hashtags. Democrats are more active, using more hashtags that also get more traction.**
+
+```{r gun_control2, message=FALSE, warning=FALSE}
+
+parkland_tweets <- senator_tweets %>%
+  filter(as.Date(created_at) %in% seq(as.Date("2018-02-14", tz = "UTC"), by = "day", length.out = 20))
+
+parkland_hashtags <- tolower(c(guncontrol_hashtags, c("StopSchoolViolenceAct", "gunsafety", "GunSafety")))
+
+parkland_tweets$year_created <- format(as.Date(parkland_tweets$created_at, format="%d/%m/%Y"),"%Y")
+parkland_tweets$year_month_created <- format(as.Date(parkland_tweets$created_at, format="%d/%m/%Y"),"%m/%Y")
+parkland_tweets$hashtags <- tolower(parkland_tweets$hashtags)
+parkland_tweets$day_created <- format(as.Date(parkland_tweets$created_at, format="%d/%m/%Y"),"%d/%m/%Y")
+parkland_tweets$hashtags <- str_replace_all(parkland_tweets$hashtags, "c\\(", "")
+parkland_tweets$hashtags <- str_replace_all(parkland_tweets$hashtags, "[[:punct:]]", "")
+parkland_tweets$hashtags <- as.list(strsplit(parkland_tweets$hashtags, " "))
+
+parkland_tweets <- parkland_tweets %>%
+  unnest(hashtags) %>%
+  subset(str_detect(tolower(.$text), c("parkland", "gun")) | hashtags %in% guncontrol_tweets)
+
+parkland_hashtag_counts <- parkland_tweets %>%
+  count(hashtags) %>%
+  arrange(desc(n)) %>%
+  filter(!is.na(hashtags))
+
+hashtag_count <- count(parkland_tweets, hashtags)
+
+parkland_tweets <- merge(parkland_tweets, senate, by.x = "screen_name", by.y = "Official Twitter")
+
+parkland_tweets$keywords <- ifelse(!is.na(parkland_tweets$hashtags), parkland_tweets$hashtags, str_extract_all(tolower(parkland_tweets$text), c("parkland")))
+
+parkland_tweets <- parkland_tweets %>%
+  unnest(keywords)
+
+parkland_count <- parkland_tweets %>%
+  group_by(year_month_created, `Party affiliation`, keywords) %>%
+  tally(retweet_count) %>%
+  filter(`Party affiliation` != "Independent") %>%
+  arrange(desc(n)) %>%
+  filter(keywords != c("daca")) %>%
+  head(20)
+  
+
+ggplot(data = parkland_count, 
+       aes(x = year_month_created, y = n, color = keywords)) + 
+  geom_point() + 
+  geom_text_repel(aes(label = keywords), colour = "gray20", size = 3, force = 4) +
+  labs(x = "Month", y = "Total retweets received by hashtag", title = "Hashtags about gunviolence after Parkland", subtitle = "How senators tweeted about gunviolence in the month after the Parkland shooting") +
+  scale_y_log10() +
+  facet_wrap(~`Party affiliation`) +
+  theme_few() +
+  theme(legend.position = "none")
+
+
+```
+
+### 3. Are you talking to me?
+
+Often tweets are simply public statements without addressing a specific audience. However, it is possible to interact with a specific person by adding them as a friend, becoming their follower, re-tweeting their messages, and/or mentioning them in a tweet using the `@` symbol.  
+
+#### a) Identifying Re-Tweets
+
+Select the set of re-tweeted messages from other senators and identify the source of the originating message. Calculate by senator the amount of re-tweets they received and from which party these re-tweets came. Essentially, I would like to visualize whether senators largely re-tweet their own party colleagues' messages or whether there are some senators that get re-tweeted on both sides of the aisle. Visualize the result. 
+
+```{r retweet_networks, message=FALSE, warning=FALSE}
+
+senator_retweets <- senator_tweets %>%
+  filter(is_retweet == TRUE)
+
+senator_retweets$retweeted_handle <- word(as.character(senator_retweets$text), 2)
+senator_retweets$retweeted_handle <- str_replace_all(senator_retweets$retweeted_handle, 
+                                                     "[[:punct:]]", "")
+
+senator_retweets <- senator_retweets %>%
+  filter(senator_retweets$retweeted_handle %in% senate$`Official Twitter`)
+
+retweet_network <- getRetweetEdges(senator_retweets)
+retweet_network <- as.data.frame(retweet_network)[c("V2", "V1")]
+retweet_network$V2 <- as.character(retweet_network$V2)
+retweet_network$V1 <- as.character(retweet_network$V1)
+
+retweet_counts <- retweet_network %>%
+  group_by(V2, V1)  %>%
+  count(V1) %>%
+  select(retweeted = V2, retweeter = V1, amount = n)
+
+g_retweets <- graph_from_edgelist(as.matrix(retweet_counts[,1:2]), directed = TRUE)
+V(g_retweets)$party <- as.character(senate$`Party affiliation`[match(V(g_retweets)$name, as.character(senate$`Official Twitter`))])
+
+el <- as.matrix(retweet_counts)
+E(g_retweets)$weight <- as.integer(el[,3])
+graph_density <- edge_density(g_retweets , loops = FALSE)
+
+adj_r <- get.adjacency(g_retweets , attr = 'weight')
+net_r <- network(adj_r, directed = TRUE)
+
+network::set.vertex.attribute(net_r, "party", V(g_retweets)$party)
+network::set.vertex.attribute(net_r, "color", ifelse((net %v% "party") == "Republican Party", "red", "blue"))
+network::set.edge.attribute(net_r, "weight", E(g_retweets)$weight)
+
+for(i in 1:length((net_r %v% "party"))) {
+  if(is.na((net_r %v% "color")[[i]])) {
+    set.vertex.attribute(net_r, "color", "green", v = i)
+  }
+  if("Independent" %in% (net_r %v% "party")[[i]]) {
+    set.vertex.attribute(net_r, "color", "yellow", v = i)
+  }
+}
+
+ggnet2(net_r, size = "indegree", arrow.size = 2, 
+       color = "red", label = TRUE, label.size = 0, 
+       edge.size = (net_r %e% "weight") / 20, legend.position = "none",
+       node.color = (net_r %v% "color"), node.label = "name")
+
+retweet_counts$retweeted_party <- as.character(senate$`Party affiliation`[match(retweet_counts$retweeted, as.character(senate$`Official Twitter`))])
+
+retweet_counts$retweeter_party <- as.character(senate$`Party affiliation`[match(retweet_counts$retweeter, as.character(senate$`Official Twitter`))])
+
+retweet_counts_byParty <- retweet_counts %>%
+  group_by(retweeted_party, retweeter_party) %>%
+  count(retweeter_party) %>%
+  filter(!is.na(retweeter_party))
+
+ggplot(data = retweet_counts_byParty, aes(x = retweeted_party, y = n, fill = retweeter_party)) + 
+  geom_bar(stat = "identity") + 
+  labs(x = "Tweets", y = "Number of retweets") +
+  scale_fill_manual(values=c("#232066", "#E69F00", "#E91D0E")) +
+  labs(x = "Party tweeting", y = "Number of retweets by party") +
+  theme_few()
+
+ggplot(data = retweet_counts_byParty, aes(x = retweeted_party, y = n, fill = retweeter_party)) + 
+  geom_bar(stat = "identity", position = "fill", aes(y = n)) + 
+  labs(x = "Tweets", y = "Number of retweets") +
+  scale_fill_manual(values=c("#232066", "#E69F00", "#E91D0E")) +
+  labs(x = "Party tweeting", y = "Number of retweets by party") +
+  guides(fill=guide_legend(title = "Party")) +
+  theme_few()
+
+```
+
+#### b) Identifying Mentions
+
+Identify the tweets in which one senator mentions another senator directly (the variable is `mentions_screen_name`). For this example, please remove simple re-tweets (`is_retweet == FALSE`). Calculate who re-tweets whom among the senate members. Convert the information to an undirected graph object in which the number of mentions is the strength of the relationship between senators. Visualize the network graph using the party identification of the senators as a group variable (use blue for Democrats and red for Republicans) and some graph centrality measure to size the nodes. Comment on what you can see from the visualization.
+
+**Democrats and Republicans seem to mention each other in similar proportions, which creates a network where nodes from both parties are on a visual approximation equally connected.**
+
+```{r mentions, message=FALSE, warning=FALSE}
+
+screen_mentions <- senator_tweets %>%
+  filter(is_retweet == FALSE) %>%
+  unnest(mentions_screen_name) %>%
+  filter(mentions_screen_name %in% senate$`Official Twitter`)
+
+screen_mentions$text <- paste("RT @", screen_mentions$mentions_screen_name, sep = "")
+
+mentions_edges <- getRetweetEdges(screen_mentions)
+mentions_edges <- as.data.frame(mentions_edges)[c("V2", "V1")]
+mentions_edges$V2 <- as.character(mentions_edges$V2)
+mentions_edges$V1 <- as.character(mentions_edges$V1)
+
+mention_counts <- mentions_edges %>%
+  group_by(V2, V1)  %>%
+  dplyr::count(V1) %>%
+  select(retweeted = V2, retweeter = V1, amount = n)
+
+g_mentions <- graph_from_edgelist(as.matrix(mention_counts[,1:2]), directed = FALSE)
+V(g_mentions)$party <- as.character(senate$`Party affiliation`[match(V(g_mentions)$name, as.character(senate$`Official Twitter`))])
+
+el_m <- as.matrix(g_mentions)
+E(g_mentions)$weight <- unlist(mention_counts[,3])
+
+adj_m <- get.adjacency(g_mentions , attr = 'weight')
+net_m <- network(adj_m, directed = TRUE)
+
+network::set.vertex.attribute(net_m, "party", V(g_mentions)$party)
+network::set.vertex.attribute(net_m, "color", ifelse((net %v% "party") == "Republican Party", "#E91D0E", "#232066"))
+network::set.edge.attribute(net_m, "weight", E(g_mentions)$weight)
+network::set.vertex.attribute(net_m, "name", V(g_mentions)$name)
+
+for(i in 1:length((net_m %v% "party"))) {
+  if(is.na((net_m %v% "color")[[i]])) {
+    set.vertex.attribute(net_m, "color", "#a7e90d", v = i)
+  }
+  if("Independent" %in% (net_m %v% "party")[[i]]) {
+    set.vertex.attribute(net_m, "color", "#e9d60d", v = i)
+  }
+}
+
+ggnet2(net_m, size = "indegree", arrow.size = 2, 
+       color = "red", label = TRUE, label.size = 2, 
+       legend.position = "none", node.color = (net_m %v% "color"), 
+       edge.size = (net_m %e% "weight") / 100, node.label = "name")
+
+mention_counts$mentioned_party <- as.character(senate$`Party affiliation`[match(mention_counts$retweeted, as.character(senate$`Official Twitter`))])
+
+mention_counts$mentioning_party <- as.character(senate$`Party affiliation`[match(mention_counts$retweeter, as.character(senate$`Official Twitter`))])
+
+mention_counts_byParty <- mention_counts %>%
+  group_by(mentioned_party, mentioning_party) %>%
+  count(mentioning_party) %>%
+  filter(!is.na(mentioning_party))
+
+ggplot(data = mention_counts_byParty, aes(x = mentioned_party, y = n, fill = mentioning_party)) + 
+  geom_bar(stat = "identity") + 
+  labs(x = "Mentioning", y = "Number of retweets") +
+  scale_fill_manual(values=c("#232066", "#E69F00", "#E91D0E")) +
+  labs(x = "Party tweeting", y = "Number of retweets by party") +
+  guides(fill = guide_legend(title = "Party")) +
+  theme_few()
+
+ggplot(data = retweet_counts_byParty, aes(x = retweeted_party, y = n, fill = retweeter_party)) + 
+  geom_bar(stat = "identity", position = "fill", aes(y = n)) + 
+  labs(x = "Tweets", y = "Number of retweets") +
+  scale_fill_manual(values=c("#232066", "#E69F00", "#E91D0E")) +
+  labs(x = "Party tweeting", y = "Number of retweets by party") +
+  guides(fill = guide_legend(title = "Party")) +
+  theme_few()
+
+```
+
+#### c) BONUS ONLY: Who is popular on Twitter?
+
+Using the twitter handles, access the user information of the senators to identify the number of followers they have (obviously, this will require to actually connect to the Twitter server). Re-do the previous graph object but now use the number of followers (or some transformation of that info) to size the nodes. Comment how graph degree centrality (via mentions) and the number of followers are related. 
+
+**The amount of followers does not have a strict connection to network centrality in the graph formed by senators. The case could be different in a larger and more diverse sample of nodes.**
+
+```{r popular_on_twitter, eval=TRUE, message=FALSE, warning=FALSE}
+
+## whatever name you assigned to your created app
+appname <- "qmss5072"
+
+## api key (example below is not a real key)
+key <- "H9WBQiraB344qCC6NBRqPAL3c"
+
+## api secret (example below is not a real key)
+secret <- "h6OnB609QpqOzPvwXWQ1TnhhtfBg4HMtlcpnCYfrUWYjQWdB5x"
+
+## create token named "twitter_token"
+twitter_token <- create_token(
+  app = appname,
+  consumer_key = key,
+  consumer_secret = secret)
+
+senatorUsers <- invoke_map(lookup_users, senate$`Official Twitter`, token = twitter_token)
+senatorUsers <- plyr::ldply(senatorUsers, data.frame)
+
+V(g_mentions)$followers <- as.character(senatorUsers$followers[match(V(g_mentions)$name, as.character(senatorUsers$screen_name))])
+
+network::set.vertex.attribute(net_m, "followers", V(g_mentions)$followers)
+network::set.vertex.attribute(net_m, "name", V(g_mentions)$name)
+
+ggnet2(net_m, size = "followers", arrow.size = 2, 
+       color = "red", label = TRUE, label.size = 2, 
+       legend.position = "none", node.color = (net_m %v% "color"), 
+       edge.size = (net_m %e% "weight") / 100, node.label = "indegree",
+       node.name = "name")
+
+```
+
+## Submission
+
+Please follow the [instructions](/Exercises/homework_submission_instructions.md) to submit your homework. The homework is due on Thursday, April 12.
+
+## Please stay honest!
+
+If you do come across something online that provides part of the analysis / code etc., please no wholesale copying of other ideas. We are trying to evaluate your abilities to visualized data not the ability to do internet searches. Also, this is an individually assigned exercise -- please keep your solution to yourself.
