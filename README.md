@@ -1,4 +1,6 @@
 # Data Visualization
 ## Mikael Brunila
 
-This is Mikael Brunila's private repository for QMSS G5063 (2018). 
+![text](Parkland_hashtags)
+
+These are homework assignments for the Data Visualization class by professor Thomas Brambor at the Columbia University QMSS program in the spring of 2018. The code is packed in .Rmd files. To see the final output, clone the repo and open the html files in each hw directory in your browser. 
